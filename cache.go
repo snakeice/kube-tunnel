@@ -10,7 +10,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-const idleTimeout = 10 * time.Minute
+const idleTimeout = 5 * time.Minute
 
 type PortForwardSession struct {
 	LocalPort int
@@ -83,7 +83,7 @@ func ensurePortForward(service, namespace string, remotePort int) (int, error) {
 		LastUsed:  time.Now(),
 	}
 	log.Printf("Cached new port-forward session for %s (local port: %d)", key, localPort)
-	time.Sleep(1 * time.Second) // Ensure port-forward is established before returning
+	time.Sleep(500 * time.Millisecond) // Ensure port-forward is established before returning
 
 	go autoExpire(key)
 
