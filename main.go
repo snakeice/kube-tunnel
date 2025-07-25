@@ -32,6 +32,9 @@ func main() {
 
 	LogStartup("Starting kube-tunnel proxy server on port " + fmt.Sprintf("%d", *port))
 
+	// Initialize health monitor after logger is set up
+	InitializeHealthMonitor()
+
 	// Start zeroconf server for *.svc.cluster.local resolution if not disabled
 	var zeroconfServer *ZeroconfServer
 	if !*noMDNS {
@@ -49,19 +52,21 @@ func main() {
 	// Create the main handler
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthCheckHandler)
+	mux.HandleFunc("/health/status", healthStatusHandler)
+	mux.HandleFunc("/health/metrics", healthMetricsHandler)
 	mux.HandleFunc("/services", func(w http.ResponseWriter, r *http.Request) {
 		servicesHandler(w, r, zeroconfServer)
 	})
 	mux.HandleFunc("/", proxyHandler)
 
-	// Configure HTTP/2 server with optimized settings
+	// Configure HTTP/2 server with performance config settings
 	h2Server := &http2.Server{
-		MaxConcurrentStreams:         1000,
-		MaxReadFrameSize:             1048576, // 1MB
+		MaxConcurrentStreams:         perfConfig.MaxConcurrentStreams,
+		MaxReadFrameSize:             perfConfig.MaxFrameSize,
 		PermitProhibitedCipherSuites: false,
-		IdleTimeout:                  300 * time.Second,
-		MaxUploadBufferPerConnection: 1048576,
-		MaxUploadBufferPerStream:     1048576,
+		IdleTimeout:                  perfConfig.IdleTimeout,
+		MaxUploadBufferPerConnection: int32(perfConfig.MaxFrameSize),
+		MaxUploadBufferPerStream:     int32(perfConfig.MaxFrameSize),
 	}
 
 	// Create h2c handler for HTTP/2 over cleartext
@@ -71,9 +76,9 @@ func main() {
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", *port),
 		Handler:      h2cHandler, // This handles HTTP/1.1, h2c, and protocol upgrades
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		ReadTimeout:  perfConfig.ReadTimeout,
+		WriteTimeout: perfConfig.WriteTimeout,
+		IdleTimeout:  perfConfig.IdleTimeout,
 	}
 
 	// Configure HTTP/2 support for TLS connections
@@ -92,6 +97,8 @@ func main() {
 		log.Info("🌐 All *.svc.cluster.local domains will resolve to this proxy")
 	}
 	log.Info(fmt.Sprintf("💡 Test: curl http://my-service.default.svc.cluster.local:%d/health", *port))
+	log.Info(fmt.Sprintf("📊 Health monitoring: http://localhost:%d/health/status", *port))
+	log.Info(fmt.Sprintf("📈 Health metrics: http://localhost:%d/health/metrics", *port))
 
 	// Start HTTP server in a goroutine
 	go func() {
@@ -107,6 +114,11 @@ func main() {
 	// Graceful shutdown
 	if zeroconfServer != nil {
 		zeroconfServer.Stop()
+	}
+
+	// Stop health monitor
+	if globalHealthMonitor != nil {
+		globalHealthMonitor.Stop()
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -121,17 +122,17 @@ func toString(v any) string {
 	case string:
 		return val
 	case int:
-		return fmt.Sprintf("%d", val)
+		return strconv.Itoa(val)
 	case int32:
-		return fmt.Sprintf("%d", val)
+		return strconv.Itoa(int(val))
 	case int64:
-		return fmt.Sprintf("%d", val)
+		return strconv.FormatInt(val, 10)
 	default:
 		return fmt.Sprintf("%v", val)
 	}
 }
 
-// Convenience functions with emojis and structured fields
+// Convenience functions with emojis and structured fields.
 func LogStartup(message string) {
 	log.WithFields(logrus.Fields{
 		"component": "startup",
@@ -164,7 +165,11 @@ func LogPortForward(service, namespace, pod string, localPort, remotePort int32)
 	}).Info("🔗 Creating port-forward")
 }
 
-func LogPortForwardWithTiming(service, namespace, pod string, localPort, remotePort int32, setupDuration time.Duration) {
+func LogPortForwardWithTiming(
+	service, namespace, pod string,
+	localPort, remotePort int32,
+	setupDuration time.Duration,
+) {
 	log.WithFields(logrus.Fields{
 		"service":     service,
 		"namespace":   namespace,
@@ -245,7 +250,13 @@ func LogDebug(message string, fields logrus.Fields) {
 	log.WithFields(fields).Debug("🔧 " + message)
 }
 
-func LogResponseMetrics(method, path string, statusCode int, duration time.Duration, responseSize int64, isGRPC bool) {
+func LogResponseMetrics(
+	method, path string,
+	statusCode int,
+	duration time.Duration,
+	responseSize int64,
+	isGRPC bool,
+) {
 	var emoji string
 	var level logrus.Level
 
@@ -295,7 +306,12 @@ func LogRequestStart(method, path string, isGRPC bool, requestSize int64) {
 	}).Info("🚀 Request started")
 }
 
-func LogProxyMetrics(service, namespace string, localPort int32, duration time.Duration, success bool) {
+func LogProxyMetrics(
+	service, namespace string,
+	localPort int32,
+	duration time.Duration,
+	success bool,
+) {
 	var emoji string
 	var level logrus.Level
 

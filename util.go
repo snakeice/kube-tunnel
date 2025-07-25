@@ -17,7 +17,6 @@ func parseHost(host string) (service, namespace string, err error) {
 }
 
 func getFreePort() (int32, error) {
-
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
 		return 0, fmt.Errorf("failed to get free port: %w", err)

@@ -34,27 +34,47 @@ func ensurePortForward(service, namespace string) (int32, error) {
 	if pf, ok := cache[key]; ok {
 		LogPortForwardReuse(service, namespace, pf.LocalPort)
 		pf.LastUsed = time.Now()
-		return pf.LocalPort, nil
+
+		// Check health status from background monitor first
+		if isBackendHealthy(key) {
+			return pf.LocalPort, nil
+		}
+
+		// If health monitor reports unhealthy, do quick validation
+		if validateConnection(pf.LocalPort) == nil {
+			// Connection works, might be temporary health issue
+			return pf.LocalPort, nil
+		}
+
+		// If validation fails, remove from cache and create new
+		LogDebug("Cached port-forward is dead, removing from cache", logrus.Fields{
+			"service":   service,
+			"namespace": namespace,
+			"port":      pf.LocalPort,
+		})
+		pf.Cancel()
+		delete(cache, key)
+		unregisterServiceFromMonitoring(key)
 	}
 
 	localPort, err := getFreePort()
 	if err != nil {
-		return 0, fmt.Errorf("failed to get free port: %v", err)
+		return 0, fmt.Errorf("failed to get free port: %w", err)
 	}
 
 	config, err := getKubeConfig()
 	if err != nil {
-		return 0, fmt.Errorf("failed to get kube config: %v", err)
+		return 0, fmt.Errorf("failed to get kube config: %w", err)
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create Kubernetes client: %v", err)
+		return 0, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 
 	podName, remotePort, err := getPodNameForService(clientset, namespace, service)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get pod for service %s: %v", key, err)
+		return 0, fmt.Errorf("failed to get pod for service %s: %w", key, err)
 	}
 
 	setupDuration := time.Since(startTime)
@@ -82,36 +102,34 @@ func ensurePortForward(service, namespace string) (int32, error) {
 		LastUsed:  time.Now(),
 	}
 
-	// Wait longer for port-forward to be fully ready
-	time.Sleep(2 * time.Second)
+	// Register service for health monitoring
+	registerServiceForMonitoring(key, localPort)
 
-	// Validate the connection is actually working
+	// Use faster validation with shorter waits
 	validationStartTime := time.Now()
-	if err := validateConnection(localPort); err != nil {
-		log.WithFields(logrus.Fields{
-			"port":        localPort,
-			"duration_ms": time.Since(validationStartTime).Milliseconds(),
-		}).Warn("Port-forward may not be fully ready")
-		// Wait a bit more and try again
-		time.Sleep(3 * time.Second)
-		secondValidationStart := time.Now()
-		if err := validateConnection(localPort); err != nil {
+	maxRetries := 10
+	baseDelay := 100 * time.Millisecond
+
+	for attempt := range maxRetries {
+		if err := validateConnection(localPort); err == nil {
 			log.WithFields(logrus.Fields{
 				"port":        localPort,
-				"error":       err.Error(),
-				"duration_ms": time.Since(secondValidationStart).Milliseconds(),
-			}).Warn("Port-forward validation failed, proceeding anyway")
+				"attempt":     attempt + 1,
+				"duration_ms": time.Since(validationStartTime).Milliseconds(),
+			}).Debug("Port-forward validation successful")
+			break
+		}
+
+		if attempt < maxRetries-1 {
+			delay := baseDelay * time.Duration(attempt+1)
+			time.Sleep(delay)
 		} else {
 			log.WithFields(logrus.Fields{
 				"port":        localPort,
-				"duration_ms": time.Since(secondValidationStart).Milliseconds(),
-			}).Debug("Port-forward validation succeeded on retry")
+				"attempts":    maxRetries,
+				"duration_ms": time.Since(validationStartTime).Milliseconds(),
+			}).Warn("Port-forward validation failed after retries, proceeding anyway")
 		}
-	} else {
-		log.WithFields(logrus.Fields{
-			"port":        localPort,
-			"duration_ms": time.Since(validationStartTime).Milliseconds(),
-		}).Debug("Port-forward validation successful")
 	}
 
 	go autoExpire(key)
@@ -127,9 +145,9 @@ func ensurePortForward(service, namespace string) (int32, error) {
 	return localPort, nil
 }
 
-// validateConnection checks if the port-forward is actually ready
+// validateConnection checks if the port-forward is actually ready.
 func validateConnection(port int32) error {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), 1*time.Second)
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), 200*time.Millisecond)
 	if err != nil {
 		return err
 	}
@@ -153,6 +171,8 @@ func autoExpire(key string) {
 			LogPortForwardExpire(key)
 			session.Cancel()
 			delete(cache, key)
+			// Unregister from health monitoring
+			unregisterServiceFromMonitoring(key)
 			cacheLock.Unlock()
 			return
 		}

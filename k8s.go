@@ -22,18 +22,23 @@ func getKubeConfig() (*rest.Config, error) {
 	kubeconfig := filepath.Join(os.Getenv("HOME"), ".kube", "config")
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build config from kubeconfig: %v", err)
+		return nil, fmt.Errorf("failed to build config from kubeconfig: %w", err)
 	}
 
 	return config, nil
 }
 
-func getPodNameForService(clientset *kubernetes.Clientset, namespace, service string) (string, int32, error) {
+func getPodNameForService(
+	clientset *kubernetes.Clientset,
+	namespace, service string,
+) (string, int32, error) {
 	log.Printf("Looking up service: %s/%s", namespace, service)
 
-	svc, err := clientset.CoreV1().Services(namespace).Get(context.TODO(), service, metav1.GetOptions{})
+	svc, err := clientset.CoreV1().
+		Services(namespace).
+		Get(context.TODO(), service, metav1.GetOptions{})
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to get service %s/%s: %v", namespace, service, err)
+		return "", 0, fmt.Errorf("failed to get service %s/%s: %w", namespace, service, err)
 	}
 
 	selector := svc.Spec.Selector
@@ -51,7 +56,12 @@ func getPodNameForService(clientset *kubernetes.Clientset, namespace, service st
 		LabelSelector: selectorString,
 	})
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to list pods for service %s/%s: %v", namespace, service, err)
+		return "", 0, fmt.Errorf(
+			"failed to list pods for service %s/%s: %w",
+			namespace,
+			service,
+			err,
+		)
 	}
 
 	for _, pod := range pods.Items {

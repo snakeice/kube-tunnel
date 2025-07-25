@@ -14,10 +14,15 @@ import (
 	"k8s.io/client-go/transport/spdy"
 )
 
-func startPortForward(ctx context.Context, config *rest.Config, namespace, pod string, localPort, remotePort int32) error {
+func startPortForward(
+	ctx context.Context,
+	config *rest.Config,
+	namespace, pod string,
+	localPort, remotePort int32,
+) error {
 	transport, upgrader, err := spdy.RoundTripperFor(config)
 	if err != nil {
-		return fmt.Errorf("failed to create SPDY round tripper: %v", err)
+		return fmt.Errorf("failed to create SPDY round tripper: %w", err)
 	}
 
 	hostIP := strings.TrimPrefix(config.Host, "https://")
@@ -34,7 +39,7 @@ func startPortForward(ctx context.Context, config *rest.Config, namespace, pod s
 	readyChan := make(chan struct{})
 	fw, err := portforward.New(dialer, ports, ctx.Done(), readyChan, out, errOut)
 	if err != nil {
-		return fmt.Errorf("failed to create port-forwarder: %v", err)
+		return fmt.Errorf("failed to create port-forwarder: %w", err)
 	}
 
 	// Start port forwarding in a goroutine

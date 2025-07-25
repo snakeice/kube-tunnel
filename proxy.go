@@ -18,7 +18,98 @@ import (
 	"golang.org/x/net/http2"
 )
 
-// responseWriterWrapper wraps http.ResponseWriter to capture metrics
+// Performance configuration from environment variables.
+type PerformanceConfig struct {
+	SkipHealthCheck         bool
+	ForceHTTP2              bool
+	DisableProtocolFallback bool
+	MaxIdleConns            int
+	MaxIdleConnsPerHost     int
+	MaxConnsPerHost         int
+	ReadTimeout             time.Duration
+	WriteTimeout            time.Duration
+	IdleTimeout             time.Duration
+	MaxConcurrentStreams    uint32
+	MaxFrameSize            uint32
+	GRPCTimeout             string
+}
+
+var perfConfig = loadPerformanceConfig()
+
+func loadPerformanceConfig() PerformanceConfig {
+	config := PerformanceConfig{
+		// Defaults
+		SkipHealthCheck:         false,
+		ForceHTTP2:              true,
+		DisableProtocolFallback: false,
+		MaxIdleConns:            200,
+		MaxIdleConnsPerHost:     50,
+		MaxConnsPerHost:         100,
+		ReadTimeout:             30 * time.Second,
+		WriteTimeout:            30 * time.Second,
+		IdleTimeout:             120 * time.Second,
+		MaxConcurrentStreams:    1000,
+		MaxFrameSize:            1048576,
+		GRPCTimeout:             "30S",
+	}
+
+	if os.Getenv("SKIP_HEALTH_CHECK") == "true" {
+		config.SkipHealthCheck = true
+	}
+	if os.Getenv("FORCE_HTTP2") == "false" {
+		config.ForceHTTP2 = false
+	}
+	if os.Getenv("DISABLE_PROTOCOL_FALLBACK") == "true" {
+		config.DisableProtocolFallback = true
+	}
+	if val := os.Getenv("MAX_IDLE_CONNS"); val != "" {
+		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+			config.MaxIdleConns = parsed
+		}
+	}
+	if val := os.Getenv("MAX_IDLE_CONNS_PER_HOST"); val != "" {
+		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+			config.MaxIdleConnsPerHost = parsed
+		}
+	}
+	if val := os.Getenv("MAX_CONNS_PER_HOST"); val != "" {
+		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+			config.MaxConnsPerHost = parsed
+		}
+	}
+	if val := os.Getenv("READ_TIMEOUT"); val != "" {
+		if parsed, err := time.ParseDuration(val); err == nil {
+			config.ReadTimeout = parsed
+		}
+	}
+	if val := os.Getenv("WRITE_TIMEOUT"); val != "" {
+		if parsed, err := time.ParseDuration(val); err == nil {
+			config.WriteTimeout = parsed
+		}
+	}
+	if val := os.Getenv("IDLE_TIMEOUT"); val != "" {
+		if parsed, err := time.ParseDuration(val); err == nil {
+			config.IdleTimeout = parsed
+		}
+	}
+	if val := os.Getenv("MAX_CONCURRENT_STREAMS"); val != "" {
+		if parsed, err := strconv.ParseUint(val, 10, 32); err == nil {
+			config.MaxConcurrentStreams = uint32(parsed)
+		}
+	}
+	if val := os.Getenv("MAX_FRAME_SIZE"); val != "" {
+		if parsed, err := strconv.ParseUint(val, 10, 32); err == nil {
+			config.MaxFrameSize = uint32(parsed)
+		}
+	}
+	if val := os.Getenv("GRPC_TIMEOUT"); val != "" {
+		config.GRPCTimeout = val
+	}
+
+	return config
+}
+
+// responseWriterWrapper wraps http.ResponseWriter to capture metrics.
 type responseWriterWrapper struct {
 	http.ResponseWriter
 	statusCode   int
@@ -36,24 +127,24 @@ func (w *responseWriterWrapper) WriteHeader(statusCode int) {
 
 func (w *responseWriterWrapper) Write(data []byte) (int, error) {
 	if !w.written {
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 	}
 	n, err := w.ResponseWriter.Write(data)
 	w.responseSize += int64(n)
 	return n, err
 }
 
-// isGRPCRequest checks if the request is a gRPC request
+// isGRPCRequest checks if the request is a gRPC request.
 func isGRPCRequest(r *http.Request) bool {
 	contentType := r.Header.Get("Content-Type")
 	// Check for gRPC content types and also check for gRPC-specific headers
 	return strings.HasPrefix(contentType, "application/grpc") ||
-		r.Header.Get("grpc-encoding") != "" ||
-		r.Header.Get("grpc-accept-encoding") != "" ||
+		r.Header.Get("Grpc-Encoding") != "" ||
+		r.Header.Get("Grpc-Accept-Encoding") != "" ||
 		strings.Contains(r.Header.Get("User-Agent"), "grpc")
 }
 
-// getProtocolInfo returns detailed protocol information
+// getProtocolInfo returns detailed protocol information.
 func getProtocolInfo(r *http.Request) string {
 	protocol := r.Proto
 	if r.TLS != nil {
@@ -72,7 +163,7 @@ func getProtocolInfo(r *http.Request) string {
 	return protocol
 }
 
-// createTransport creates an optimized transport for the target protocol
+// createTransport creates an optimized transport for the target protocol.
 func createTransport(isHTTPS bool, protocol string) http.RoundTripper {
 	if protocol == "h2c" {
 		return &http2.Transport{
@@ -80,17 +171,25 @@ func createTransport(isHTTPS bool, protocol string) http.RoundTripper {
 			DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
 				return net.Dial(network, addr)
 			},
+			// Use configurable HTTP/2 settings
+			MaxHeaderListSize:  262144, // 256KB
+			DisableCompression: false,
+			ReadIdleTimeout:    30 * time.Second,
+			PingTimeout:        15 * time.Second,
 		}
 	}
 
 	transport := &http.Transport{
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+		MaxIdleConns:          perfConfig.MaxIdleConns,
+		MaxIdleConnsPerHost:   perfConfig.MaxIdleConnsPerHost,
+		MaxConnsPerHost:       perfConfig.MaxConnsPerHost,
+		IdleConnTimeout:       perfConfig.IdleTimeout,
+		TLSHandshakeTimeout:   5 * time.Second,        // Keep optimized
+		ExpectContinueTimeout: 500 * time.Millisecond, // Keep optimized
 		DisableCompression:    false,
-		ForceAttemptHTTP2:     false,
+		ForceAttemptHTTP2:     perfConfig.ForceHTTP2,
+		ResponseHeaderTimeout: 10 * time.Second,
+		DisableKeepAlives:     false,
 	}
 
 	if isHTTPS {
@@ -100,10 +199,10 @@ func createTransport(isHTTPS bool, protocol string) http.RoundTripper {
 	return transport
 }
 
-// getRetryConfig returns retry configuration from environment variables
+// getRetryConfig returns retry configuration from environment variables.
 func getRetryConfig() (maxRetries int, baseDelay time.Duration) {
-	maxRetries = 3
-	baseDelay = 200 * time.Millisecond
+	maxRetries = 2                     // Reduced from 3 for faster failures
+	baseDelay = 100 * time.Millisecond // Reduced from 200ms
 
 	if envRetries := os.Getenv("PROXY_MAX_RETRIES"); envRetries != "" {
 		if parsed, err := strconv.Atoi(envRetries); err == nil && parsed >= 0 && parsed <= 10 {
@@ -112,7 +211,7 @@ func getRetryConfig() (maxRetries int, baseDelay time.Duration) {
 	}
 
 	if envDelay := os.Getenv("PROXY_RETRY_DELAY_MS"); envDelay != "" {
-		if parsed, err := strconv.Atoi(envDelay); err == nil && parsed >= 50 && parsed <= 5000 {
+		if parsed, err := strconv.Atoi(envDelay); err == nil && parsed >= 25 && parsed <= 2000 {
 			baseDelay = time.Duration(parsed) * time.Millisecond
 		}
 	}
@@ -120,7 +219,7 @@ func getRetryConfig() (maxRetries int, baseDelay time.Duration) {
 	return maxRetries, baseDelay
 }
 
-// retryableTransport wraps a transport with retry logic for connection failures
+// retryableTransport wraps a transport with retry logic for connection failures.
 type retryableTransport struct {
 	base       http.RoundTripper
 	maxRetries int
@@ -174,10 +273,10 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		// Don't wait after the last attempt
 		if attempt < rt.maxRetries {
 			delay := min(
-				// Exponential backoff
+				// Faster exponential backoff
 				rt.baseDelay*time.Duration(1<<uint(attempt)),
-				// Cap at 5 seconds
-				5*time.Second)
+				// Cap at 1 second instead of 5
+				1*time.Second)
 
 			LogRetryWithTiming(attempt+1, delay.String(), err, attemptDuration)
 
@@ -223,7 +322,7 @@ func isRetryableError(err error) bool {
 		strings.Contains(errStr, "HTTP/1.x transport connection broken")
 }
 
-// healthCheckBackend performs a quick health check on the backend service
+// healthCheckBackend performs a quick health check on the backend service.
 func healthCheckBackend(port int32, timeout time.Duration) error {
 	client := &http.Client{
 		Timeout: timeout,
@@ -243,7 +342,7 @@ func healthCheckBackend(port int32, timeout time.Duration) error {
 	return nil
 }
 
-// protocolFallbackTransport tries different protocols on failure
+// protocolFallbackTransport tries different protocols on failure.
 type protocolFallbackTransport struct {
 	port       int32
 	isGRPC     bool
@@ -252,6 +351,22 @@ type protocolFallbackTransport struct {
 }
 
 func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Skip protocol fallback if disabled
+	if perfConfig.DisableProtocolFallback {
+		protocol := "h2c"
+		if !pft.isGRPC {
+			protocol = "http/1.1"
+		}
+		transport := createTransport(false, protocol)
+		retryTransport := &retryableTransport{
+			base:       transport,
+			maxRetries: pft.maxRetries,
+			baseDelay:  pft.baseDelay,
+			isGRPC:     pft.isGRPC,
+		}
+		return retryTransport.RoundTrip(req)
+	}
+
 	protocols := []string{"h2c", "http/1.1"}
 	if !pft.isGRPC {
 		protocols = []string{"http/1.1", "h2c"}
@@ -301,7 +416,7 @@ func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Respon
 	return nil, lastErr
 }
 
-// createProtocolFallbackTransport creates a transport that tries multiple protocols
+// createProtocolFallbackTransport creates a transport that tries multiple protocols.
 func createProtocolFallbackTransport(port int32, isGRPC bool) http.RoundTripper {
 	maxRetries, baseDelay := getRetryConfig()
 
@@ -318,8 +433,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	isGRPC := isGRPCRequest(r)
 	protocolInfo := getProtocolInfo(r)
 
-	// Add timeout context for the entire request
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	// Add shorter timeout context for faster failures
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)
 
@@ -332,10 +447,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	// Set CORS headers for browser compatibility
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, grpc-timeout, grpc-encoding, grpc-accept-encoding")
+	w.Header().
+		Set("Access-Control-Allow-Headers", "Content-Type, Authorization, grpc-timeout, grpc-encoding, grpc-accept-encoding")
 
 	// Handle preflight requests
-	if r.Method == "OPTIONS" {
+	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -347,8 +463,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		if isGRPC {
 			// gRPC error response
 			w.Header().Set("Content-Type", "application/grpc")
-			w.Header().Set("grpc-status", "3") // INVALID_ARGUMENT
-			w.Header().Set("grpc-message", "Invalid host format")
+			w.Header().Set("Grpc-Status", "3") // INVALID_ARGUMENT
+			w.Header().Set("Grpc-Message", "Invalid host format")
 			w.WriteHeader(http.StatusOK)
 		} else {
 			http.Error(w, "Invalid host format", http.StatusBadRequest)
@@ -363,8 +479,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		if isGRPC {
 			// gRPC error response
 			w.Header().Set("Content-Type", "application/grpc")
-			w.Header().Set("grpc-status", "14") // UNAVAILABLE
-			w.Header().Set("grpc-message", "Service Unavailable")
+			w.Header().Set("Grpc-Status", "14") // UNAVAILABLE
+			w.Header().Set("Grpc-Message", "Service Unavailable")
 			w.WriteHeader(http.StatusOK)
 		} else {
 			http.Error(w, "Error creating port-forward", http.StatusInternalServerError)
@@ -378,28 +494,44 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		"port":      localPort,
 	})
 
-	// Skip health check for gRPC services to avoid protocol detection errors
-	if !isGRPC {
-		LogDebug("Checking backend health", logrus.Fields{
-			"port": localPort,
+	// Use background health monitor status instead of inline checks
+	serviceKey := fmt.Sprintf("%s.%s", service, namespace)
+	healthy := true
+	var healthStatus *HealthStatus
+	if globalHealthMonitor != nil {
+		healthy, healthStatus = globalHealthMonitor.IsHealthy(serviceKey)
+	} else {
+		healthStatus = &HealthStatus{IsHealthy: true, ResponseTime: 0}
+	}
+
+	if !healthy {
+		LogDebug("Backend reported unhealthy by monitor", logrus.Fields{
+			"service":       service,
+			"namespace":     namespace,
+			"port":          localPort,
+			"failure_count": healthStatus.FailureCount,
+			"last_error":    healthStatus.ErrorMessage,
+			"last_healthy":  healthStatus.LastHealthy,
 		})
 
-		maxHealthRetries := 3
-		for attempt := range maxHealthRetries {
-			if err := healthCheckBackend(localPort, 1*time.Second); err == nil {
-				LogBackendHealth(localPort, "healthy")
-				break
-			} else if attempt < maxHealthRetries-1 {
-				delay := time.Duration(attempt+1) * 300 * time.Millisecond
-				LogRetry(attempt+1, delay.String(), err)
-				time.Sleep(delay)
-			} else {
+		// For unhealthy services, do a quick validation before proceeding
+		if !perfConfig.SkipHealthCheck {
+			if err := healthCheckBackend(localPort, 500*time.Millisecond); err != nil {
 				LogBackendHealth(localPort, "unhealthy")
+				LogDebug("Quick health validation failed, proceeding anyway", logrus.Fields{
+					"port":  localPort,
+					"error": err.Error(),
+				})
+			} else {
+				LogBackendHealth(localPort, "recovered")
 			}
 		}
 	} else {
-		LogDebug("Skipping health check for gRPC service", logrus.Fields{
-			"port": localPort,
+		LogDebug("Backend healthy according to monitor", logrus.Fields{
+			"service":     service,
+			"namespace":   namespace,
+			"port":        localPort,
+			"response_ms": healthStatus.ResponseTime.Milliseconds(),
 		})
 	}
 
@@ -436,8 +568,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 					req.Header.Set("TE", "trailers")
 				}
 				// Add gRPC-specific timeout handling
-				if req.Header.Get("grpc-timeout") == "" {
-					req.Header.Set("grpc-timeout", "30S") // 30 second default timeout
+				if req.Header.Get("Grpc-Timeout") == "" {
+					req.Header.Set("Grpc-Timeout", perfConfig.GRPCTimeout)
 				}
 				// Set User-Agent for gRPC if not present
 				if req.Header.Get("User-Agent") == "" {
@@ -465,8 +597,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				if resp.Header.Get("Content-Type") == "" {
 					resp.Header.Set("Content-Type", "application/grpc+proto")
 				}
-				if resp.Header.Get("grpc-status") == "" && resp.StatusCode == 200 {
-					resp.Header.Set("grpc-status", "0") // OK
+				if resp.Header.Get("Grpc-Status") == "" && resp.StatusCode == http.StatusOK {
+					resp.Header.Set("Grpc-Status", "0") // OK
 				}
 			}
 			return nil
@@ -500,14 +632,14 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				}
 
 				w.Header().Set("Content-Type", "application/grpc")
-				w.Header().Set("grpc-status", grpcStatus)
-				w.Header().Set("grpc-message", fmt.Sprintf("Proxy Error: %v", err))
+				w.Header().Set("Grpc-Status", grpcStatus)
+				w.Header().Set("Grpc-Message", fmt.Sprintf("Proxy Error: %v", err))
 				w.WriteHeader(http.StatusOK)
 			} else {
 				http.Error(w, fmt.Sprintf("Bad Gateway: %v", err), http.StatusBadGateway)
 			}
 		},
-		FlushInterval: time.Millisecond * 100,
+		FlushInterval: time.Millisecond * 50, // Reduced from 100ms for faster streaming
 	}
 
 	// Log retry configuration for this request
@@ -526,10 +658,17 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Log final metrics
 	LogProxyMetrics(service, namespace, localPort, proxyDuration, responseWriter.statusCode < 400)
-	LogResponseMetrics(r.Method, r.URL.Path, responseWriter.statusCode, totalDuration, responseWriter.responseSize, isGRPC)
+	LogResponseMetrics(
+		r.Method,
+		r.URL.Path,
+		responseWriter.statusCode,
+		totalDuration,
+		responseWriter.responseSize,
+		isGRPC,
+	)
 }
 
-// healthCheckHandler provides a simple health check endpoint
+// healthCheckHandler provides a simple health check endpoint.
 func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	protocolInfo := getProtocolInfo(r)
 
@@ -554,7 +693,7 @@ func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	LogHealthCheck(protocolInfo)
 }
 
-// servicesHandler provides information about discovered services
+// servicesHandler provides information about discovered services.
 func servicesHandler(w http.ResponseWriter, r *http.Request, zeroconfServer *ZeroconfServer) {
 	protocolInfo := getProtocolInfo(r)
 
@@ -602,7 +741,136 @@ func servicesHandler(w http.ResponseWriter, r *http.Request, zeroconfServer *Zer
 	}).Info("📋 Services list requested")
 }
 
-// loadTLSConfig loads TLS configuration with proper cipher suites for HTTP/2
+// healthStatusHandler provides health status for all monitored services
+func healthStatusHandler(w http.ResponseWriter, r *http.Request) {
+	protocolInfo := getProtocolInfo(r)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	healthMonitor := GetHealthMonitor()
+	var allStatus map[string]*HealthStatus
+	if healthMonitor != nil {
+		allStatus = healthMonitor.GetAllHealthStatus()
+	} else {
+		allStatus = make(map[string]*HealthStatus)
+	}
+
+	// Convert to API-friendly format
+	statusList := make([]map[string]any, 0, len(allStatus))
+	for serviceKey, status := range allStatus {
+		statusList = append(statusList, map[string]any{
+			"service":       serviceKey,
+			"healthy":       status.IsHealthy,
+			"last_checked":  status.LastChecked.Format(time.RFC3339),
+			"last_healthy":  status.LastHealthy.Format(time.RFC3339),
+			"failure_count": status.FailureCount,
+			"response_time": status.ResponseTime.Milliseconds(),
+			"error_message": status.ErrorMessage,
+		})
+	}
+
+	response := map[string]any{
+		"status":          "ok",
+		"protocol":        protocolInfo,
+		"monitor_enabled": healthConfig.Enabled,
+		"check_interval":  healthConfig.CheckInterval.String(),
+		"total_services":  len(allStatus),
+		"services":        statusList,
+		"timestamp":       time.Now().Format(time.RFC3339),
+	}
+
+	_ = json.NewEncoder(w).Encode(response)
+
+	log.WithFields(logrus.Fields{
+		"protocol":      protocolInfo,
+		"service_count": len(allStatus),
+		"client_ip":     r.RemoteAddr,
+	}).Info("📊 Health status requested")
+}
+
+// healthMetricsHandler provides aggregate health metrics
+func healthMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	protocolInfo := getProtocolInfo(r)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	healthMonitor := GetHealthMonitor()
+	var allStatus map[string]*HealthStatus
+	if healthMonitor != nil {
+		allStatus = healthMonitor.GetAllHealthStatus()
+	} else {
+		allStatus = make(map[string]*HealthStatus)
+	}
+
+	// Calculate metrics
+	totalServices := len(allStatus)
+	healthyServices := 0
+	unhealthyServices := 0
+	var totalResponseTime time.Duration
+	var maxResponseTime time.Duration
+	var minResponseTime time.Duration = time.Hour // Initialize to high value
+
+	for _, status := range allStatus {
+		if status.IsHealthy {
+			healthyServices++
+		} else {
+			unhealthyServices++
+		}
+
+		totalResponseTime += status.ResponseTime
+		if status.ResponseTime > maxResponseTime {
+			maxResponseTime = status.ResponseTime
+		}
+		if status.ResponseTime < minResponseTime && status.ResponseTime > 0 {
+			minResponseTime = status.ResponseTime
+		}
+	}
+
+	var avgResponseTime time.Duration
+	if totalServices > 0 {
+		avgResponseTime = totalResponseTime / time.Duration(totalServices)
+	}
+	if minResponseTime == time.Hour {
+		minResponseTime = 0
+	}
+
+	healthRatio := float64(healthyServices) / float64(max(totalServices, 1))
+
+	response := map[string]any{
+		"status":             "ok",
+		"protocol":           protocolInfo,
+		"monitor_enabled":    healthConfig.Enabled,
+		"total_services":     totalServices,
+		"healthy_services":   healthyServices,
+		"unhealthy_services": unhealthyServices,
+		"health_ratio":       fmt.Sprintf("%.2f", healthRatio),
+		"response_times": map[string]any{
+			"average_ms": avgResponseTime.Milliseconds(),
+			"min_ms":     minResponseTime.Milliseconds(),
+			"max_ms":     maxResponseTime.Milliseconds(),
+		},
+		"configuration": map[string]any{
+			"check_interval": healthConfig.CheckInterval.String(),
+			"timeout":        healthConfig.Timeout.String(),
+			"max_failures":   healthConfig.MaxFailures,
+		},
+		"timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	_ = json.NewEncoder(w).Encode(response)
+
+	log.WithFields(logrus.Fields{
+		"protocol":         protocolInfo,
+		"total_services":   totalServices,
+		"healthy_services": healthyServices,
+		"health_ratio":     healthRatio,
+		"client_ip":        r.RemoteAddr,
+	}).Info("📈 Health metrics requested")
+}
+
+// loadTLSConfig loads TLS configuration with proper cipher suites for HTTP/2.
 func loadTLSConfig() *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,

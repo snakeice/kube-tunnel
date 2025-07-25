@@ -37,7 +37,7 @@ type ServiceInfo struct {
 	LastSeen  time.Time
 }
 
-// NewZeroconfServer creates a new zeroconf-based mDNS server instance
+// NewZeroconfServer creates a new zeroconf-based mDNS server instance.
 func NewZeroconfServer() *ZeroconfServer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ZeroconfServer{
@@ -48,7 +48,7 @@ func NewZeroconfServer() *ZeroconfServer {
 	}
 }
 
-// Start begins the zeroconf server for Kubernetes service discovery
+// Start begins the zeroconf server for Kubernetes service discovery.
 func (z *ZeroconfServer) Start() error {
 	z.running = true
 
@@ -60,7 +60,8 @@ func (z *ZeroconfServer) Start() error {
 
 	// Register our proxy as a general Kubernetes service gateway
 	if err := z.registerProxyService(); err != nil {
-		log.WithField("error", err.Error()).Warn("⚠️  Failed to register proxy service (continuing anyway)")
+		log.WithField("error", err.Error()).
+			Warn("⚠️  Failed to register proxy service (continuing anyway)")
 	}
 
 	// Start background service discovery and monitoring with proper error handling
@@ -71,7 +72,7 @@ func (z *ZeroconfServer) Start() error {
 	return nil
 }
 
-// Stop gracefully shuts down the zeroconf server
+// Stop gracefully shuts down the zeroconf server.
 func (z *ZeroconfServer) Stop() {
 	if !z.running {
 		return
@@ -99,7 +100,7 @@ func (z *ZeroconfServer) Stop() {
 	log.Info("✅ Zeroconf server stopped")
 }
 
-// registerProxyService registers our proxy as a service discovery gateway
+// registerProxyService registers our proxy as a service discovery gateway.
 func (z *ZeroconfServer) registerProxyService() error {
 	hostname, err := getHostname()
 	if err != nil {
@@ -108,7 +109,7 @@ func (z *ZeroconfServer) registerProxyService() error {
 
 	// Register as a generic gateway service
 	serviceName := "_kube-tunnel._tcp"
-	instanceName := fmt.Sprintf("%s-proxy", hostname)
+	instanceName := hostname + "-proxy"
 
 	text := []string{
 		"version=1.0",
@@ -127,7 +128,7 @@ func (z *ZeroconfServer) registerProxyService() error {
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to register proxy service: %v", err)
+		return fmt.Errorf("failed to register proxy service: %w", err)
 	}
 
 	z.server = server
@@ -142,7 +143,7 @@ func (z *ZeroconfServer) registerProxyService() error {
 	return nil
 }
 
-// safeMonitorServices wraps service monitoring with panic recovery
+// safeMonitorServices wraps service monitoring with panic recovery.
 func (z *ZeroconfServer) safeMonitorServices() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -158,7 +159,7 @@ func (z *ZeroconfServer) safeMonitorServices() {
 	z.monitorServices()
 }
 
-// monitorServices continuously discovers and tracks Kubernetes services
+// monitorServices continuously discovers and tracks Kubernetes services.
 func (z *ZeroconfServer) monitorServices() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -182,7 +183,7 @@ func (z *ZeroconfServer) monitorServices() {
 	}
 }
 
-// safeDiscoverServices wraps service discovery with panic recovery
+// safeDiscoverServices wraps service discovery with panic recovery.
 func (z *ZeroconfServer) safeDiscoverServices() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -193,7 +194,7 @@ func (z *ZeroconfServer) safeDiscoverServices() {
 	z.discoverServices()
 }
 
-// discoverServices performs service discovery for Kubernetes services
+// discoverServices performs service discovery for Kubernetes services.
 func (z *ZeroconfServer) discoverServices() {
 	// Common Kubernetes service types to discover
 	serviceTypes := []string{
@@ -212,7 +213,7 @@ func (z *ZeroconfServer) discoverServices() {
 	}
 }
 
-// safeBrowseServiceType wraps browseServiceType with panic recovery
+// safeBrowseServiceType wraps browseServiceType with panic recovery.
 func (z *ZeroconfServer) safeBrowseServiceType(serviceType string) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -226,7 +227,7 @@ func (z *ZeroconfServer) safeBrowseServiceType(serviceType string) {
 	z.browseServiceType(serviceType)
 }
 
-// browseServiceType discovers services of a specific type with proper error handling
+// browseServiceType discovers services of a specific type with proper error handling.
 func (z *ZeroconfServer) browseServiceType(serviceType string) {
 	// Create a context with timeout for this browse operation
 	ctx, cancel := context.WithTimeout(z.ctx, browseTimeout)
@@ -292,7 +293,7 @@ func (z *ZeroconfServer) browseServiceType(serviceType string) {
 	}
 }
 
-// processServiceEntry processes a discovered service entry
+// processServiceEntry processes a discovered service entry.
 func (z *ZeroconfServer) processServiceEntry(entry *zeroconf.ServiceEntry) {
 	if entry == nil {
 		return
@@ -329,7 +330,7 @@ func (z *ZeroconfServer) processServiceEntry(entry *zeroconf.ServiceEntry) {
 	}).Debug("🔍 Discovered Kubernetes service")
 }
 
-// isKubernetesService checks if a service entry is Kubernetes-related
+// isKubernetesService checks if a service entry is Kubernetes-related.
 func (z *ZeroconfServer) isKubernetesService(entry *zeroconf.ServiceEntry) bool {
 	// Check TXT records for Kubernetes indicators
 	for _, txt := range entry.Text {
@@ -348,8 +349,10 @@ func (z *ZeroconfServer) isKubernetesService(entry *zeroconf.ServiceEntry) bool 
 		strings.Contains(instanceLower, "kubernetes")
 }
 
-// extractServiceInfo extracts service and namespace from service entry
-func (z *ZeroconfServer) extractServiceInfo(entry *zeroconf.ServiceEntry) (service, namespace string) {
+// extractServiceInfo extracts service and namespace from service entry.
+func (z *ZeroconfServer) extractServiceInfo(
+	entry *zeroconf.ServiceEntry,
+) (service, namespace string) {
 	// Try to extract from TXT records first
 	for _, txt := range entry.Text {
 		if after, ok := strings.CutPrefix(txt, "service="); ok {
@@ -383,7 +386,7 @@ func (z *ZeroconfServer) extractServiceInfo(entry *zeroconf.ServiceEntry) (servi
 	return service, namespace
 }
 
-// cleanupStaleServices removes services that haven't been seen recently
+// cleanupStaleServices removes services that haven't been seen recently.
 func (z *ZeroconfServer) cleanupStaleServices() {
 	z.mutex.Lock()
 	defer z.mutex.Unlock()
@@ -406,7 +409,7 @@ func (z *ZeroconfServer) cleanupStaleServices() {
 	}
 }
 
-// monitorShutdown watches for shutdown signal
+// monitorShutdown watches for shutdown signal.
 func (z *ZeroconfServer) monitorShutdown() {
 	select {
 	case <-z.shutdown:
@@ -416,7 +419,7 @@ func (z *ZeroconfServer) monitorShutdown() {
 	}
 }
 
-// LookupService attempts to resolve a Kubernetes service domain
+// LookupService attempts to resolve a Kubernetes service domain.
 func (z *ZeroconfServer) LookupService(domain string) (*ServiceInfo, bool) {
 	if !ValidateServiceDomain(domain) {
 		return nil, false
@@ -457,14 +460,14 @@ func (z *ZeroconfServer) LookupService(domain string) (*ServiceInfo, bool) {
 	return nil, false
 }
 
-// RegisterService registers a new Kubernetes service
+// RegisterService registers a new Kubernetes service.
 func (z *ZeroconfServer) RegisterService(service, namespace string, port int) error {
 	instanceName := fmt.Sprintf("k8s-%s-%s", service, namespace)
 	serviceName := "_kubernetes._tcp"
 
 	text := []string{
-		fmt.Sprintf("service=%s", service),
-		fmt.Sprintf("namespace=%s", namespace),
+		"service=" + service,
+		"namespace=" + namespace,
 		"type=kubernetes-service",
 		"proxy=kube-tunnel",
 	}
@@ -479,7 +482,7 @@ func (z *ZeroconfServer) RegisterService(service, namespace string, port int) er
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to register service %s.%s: %v", service, namespace, err)
+		return fmt.Errorf("failed to register service %s.%s: %w", service, namespace, err)
 	}
 
 	// Store in our cache as well
@@ -513,7 +516,7 @@ func (z *ZeroconfServer) RegisterService(service, namespace string, port int) er
 	return nil
 }
 
-// GetAllServices returns a copy of all discovered services
+// GetAllServices returns a copy of all discovered services.
 func (z *ZeroconfServer) GetAllServices() map[string]*ServiceInfo {
 	z.mutex.RLock()
 	defer z.mutex.RUnlock()
@@ -532,7 +535,7 @@ func (z *ZeroconfServer) GetAllServices() map[string]*ServiceInfo {
 	return services
 }
 
-// SafeStart wraps the Start method with additional error recovery
+// SafeStart wraps the Start method with additional error recovery.
 func (z *ZeroconfServer) SafeStart() error {
 	defer func() {
 		if r := recover(); r != nil {
@@ -543,7 +546,7 @@ func (z *ZeroconfServer) SafeStart() error {
 	return z.Start()
 }
 
-// LogZeroconfStats logs statistics about zeroconf operations
+// LogZeroconfStats logs statistics about zeroconf operations.
 func (z *ZeroconfServer) LogZeroconfStats() {
 	z.mutex.RLock()
 	serviceCount := len(z.services)
@@ -588,8 +591,7 @@ func getHostname() (string, error) {
 	return strings.TrimSuffix(hostname[0], "."), nil
 }
 
-// ValidateServiceDomain checks if a domain is a valid Kubernetes service domain
-// (keeping the existing function for compatibility)
+// (keeping the existing function for compatibility).
 func ValidateServiceDomain(domain string) bool {
 	if !strings.HasSuffix(domain, ".svc.cluster.local") {
 		return false
@@ -611,8 +613,7 @@ func ValidateServiceDomain(domain string) bool {
 	return true
 }
 
-// GetServiceInfo extracts service information from a domain
-// (keeping the existing function for compatibility)
+// (keeping the existing function for compatibility).
 func GetServiceInfo(domain string) (service, namespace, port string) {
 	if !ValidateServiceDomain(domain) {
 		return "", "", ""

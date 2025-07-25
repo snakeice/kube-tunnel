@@ -25,6 +25,9 @@ kube-tunnel acts as a smart proxy that intercepts HTTP requests formatted as Kub
 - **Cross-Platform**: Works on macOS, Linux, and Windows with automatic DNS configuration
 - **Standards-Compliant**: RFC 6762 (mDNS) and RFC 6763 (DNS-SD) compliant service discovery
 - **Service Registration**: Automatic registration and discovery of Kubernetes services
+- **Background Health Monitoring**: Continuous health checks eliminate request-time health verification
+- **Performance Optimization**: Configurable transport settings, connection pooling, and retry logic
+- **Health Status API**: Real-time health monitoring with `/health/status` and `/health/metrics` endpoints
 - **In-Cluster & Local Support**: Works both inside Kubernetes clusters and with local kubeconfig
 
 ## How It Works
@@ -32,9 +35,56 @@ kube-tunnel acts as a smart proxy that intercepts HTTP requests formatted as Kub
 1. **Request Interception**: The proxy receives HTTP requests with hosts like `service.namespace.svc.cluster.local`
 2. **Service Discovery**: Looks up the service and finds a running pod using Kubernetes API
 3. **Port-Forward Creation**: Establishes a port-forward from a local port to the pod
-4. **Request Proxying**: Forwards the HTTP request to the local port-forward
-5. **Caching**: Maintains the port-forward for future requests to the same service
-6. **Auto-Cleanup**: Automatically closes idle port-forwards after 10 minutes
+4. **Health Monitoring**: Background health monitor continuously tracks service health
+5. **Request Proxying**: Forwards the HTTP request to the local port-forward with health-aware routing
+6. **Caching**: Maintains the port-forward for future requests to the same service
+7. **Auto-Cleanup**: Automatically closes idle port-forwards after 5 minutes
+
+## Health Monitoring
+
+kube-tunnel includes a sophisticated background health monitoring system that:
+
+- **Eliminates Request Delays**: Health checks run in background, not on request path
+- **Continuous Monitoring**: Checks active services every 30 seconds (configurable)
+- **Multiple Check Types**: TCP connectivity and HTTP endpoint validation
+- **Failure Detection**: Configurable failure thresholds with exponential backoff
+- **Service Recovery**: Automatic detection when failed services recover
+- **Performance APIs**: Real-time health status via `/health/status` and `/health/metrics`
+
+### Health Monitoring Configuration
+
+```bash
+# Enable/disable health monitoring
+export HEALTH_MONITOR_ENABLED=true
+
+# Check frequency (default: 30s)
+export HEALTH_CHECK_INTERVAL=30s
+
+# Health check timeout (default: 2s)
+export HEALTH_CHECK_TIMEOUT=2s
+
+# Failures before marking unhealthy (default: 3)
+export HEALTH_MAX_FAILURES=3
+
+# Recovery retries (default: 2)
+export HEALTH_RECOVERY_RETRIES=2
+```
+
+### Health API Endpoints
+
+```bash
+# Basic proxy health
+curl http://localhost:80/health
+
+# Detailed service health status
+curl http://localhost:80/health/status
+
+# Health metrics and statistics
+curl http://localhost:80/health/metrics
+
+# Run health monitoring demo
+./scripts/health-demo.sh
+```
 
 ## Installation
 
