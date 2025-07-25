@@ -6,14 +6,13 @@ import (
 	"strings"
 )
 
-func parseHost(host string) (service, namespace string, err error) {
+func parseHost(host string) (string, string, error) {
 	parts := strings.Split(host, ".")
 	if len(parts) < 5 || parts[2] != "svc" {
 		return "", "", fmt.Errorf("invalid host: %s", host)
 	}
 
-	service, namespace = parts[0], parts[1]
-	return service, namespace, nil
+	return parts[0], parts[1], nil
 }
 
 func getFreePort() (int32, error) {

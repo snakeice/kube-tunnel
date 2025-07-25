@@ -49,7 +49,7 @@ func NewZeroconfServer() *ZeroconfServer {
 }
 
 // Start begins the zeroconf server for Kubernetes service discovery.
-func (z *ZeroconfServer) Start() error {
+func (z *ZeroconfServer) Start() {
 	z.running = true
 
 	log.WithFields(logrus.Fields{
@@ -69,7 +69,6 @@ func (z *ZeroconfServer) Start() error {
 	go z.monitorShutdown()
 
 	log.Info("✅ Zeroconf server started successfully")
-	return nil
 }
 
 // Stop gracefully shuts down the zeroconf server.
@@ -352,7 +351,8 @@ func (z *ZeroconfServer) isKubernetesService(entry *zeroconf.ServiceEntry) bool 
 // extractServiceInfo extracts service and namespace from service entry.
 func (z *ZeroconfServer) extractServiceInfo(
 	entry *zeroconf.ServiceEntry,
-) (service, namespace string) {
+) (string, string) {
+	var service, namespace string
 	// Try to extract from TXT records first
 	for _, txt := range entry.Text {
 		if after, ok := strings.CutPrefix(txt, "service="); ok {
@@ -536,14 +536,14 @@ func (z *ZeroconfServer) GetAllServices() map[string]*ServiceInfo {
 }
 
 // SafeStart wraps the Start method with additional error recovery.
-func (z *ZeroconfServer) SafeStart() error {
+func (z *ZeroconfServer) SafeStart() {
 	defer func() {
 		if r := recover(); r != nil {
 			log.WithField("panic", r).Error("❌ Zeroconf server start panic recovered")
 		}
 	}()
 
-	return z.Start()
+	z.Start()
 }
 
 // LogZeroconfStats logs statistics about zeroconf operations.
@@ -614,7 +614,7 @@ func ValidateServiceDomain(domain string) bool {
 }
 
 // (keeping the existing function for compatibility).
-func GetServiceInfo(domain string) (service, namespace, port string) {
+func GetServiceInfo(domain string) (string, string, string) {
 	if !ValidateServiceDomain(domain) {
 		return "", "", ""
 	}
@@ -623,10 +623,8 @@ func GetServiceInfo(domain string) (service, namespace, port string) {
 	parts := strings.Split(servicePart, ".")
 
 	if len(parts) >= 2 {
-		service = parts[0]
-		namespace = parts[1]
-		port = "80" // default port
+		return parts[0], parts[1], "80"
 	}
 
-	return service, namespace, port
+	return "", "", ""
 }

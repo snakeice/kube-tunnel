@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,7 +13,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// HealthStatus represents the health state of a backend service
+// HealthStatus represents the health state of a backend service.
 type HealthStatus struct {
 	IsHealthy    bool
 	LastChecked  time.Time
@@ -22,7 +23,7 @@ type HealthStatus struct {
 	ErrorMessage string
 }
 
-// HealthMonitor manages background health checks for all active services
+// HealthMonitor manages background health checks for all active services.
 type HealthMonitor struct {
 	healthCache   map[string]*HealthStatus
 	cacheLock     sync.RWMutex
@@ -34,7 +35,7 @@ type HealthMonitor struct {
 	wg            sync.WaitGroup
 }
 
-// HealthConfig holds configuration for health monitoring
+// HealthConfig holds configuration for health monitoring.
 type HealthConfig struct {
 	Enabled         bool
 	CheckInterval   time.Duration
@@ -48,7 +49,6 @@ var (
 	healthConfig        = loadHealthConfig()
 )
 
-// loadHealthConfig loads health monitoring configuration from environment
 func loadHealthConfig() HealthConfig {
 	config := HealthConfig{
 		Enabled:         true,
@@ -89,7 +89,6 @@ func loadHealthConfig() HealthConfig {
 	return config
 }
 
-// NewHealthMonitor creates a new health monitor instance
 func NewHealthMonitor(config HealthConfig) *HealthMonitor {
 	return &HealthMonitor{
 		healthCache:   make(map[string]*HealthStatus),
@@ -101,10 +100,8 @@ func NewHealthMonitor(config HealthConfig) *HealthMonitor {
 	}
 }
 
-// Start begins background health monitoring
 func (hm *HealthMonitor) Start() {
 	if !hm.enabled {
-		LogDebug("Health monitor disabled", logrus.Fields{})
 		return
 	}
 
@@ -118,18 +115,15 @@ func (hm *HealthMonitor) Start() {
 	go hm.monitorLoop()
 }
 
-// Stop gracefully stops the health monitor
 func (hm *HealthMonitor) Stop() {
 	if !hm.enabled {
 		return
 	}
 
-	LogDebug("Stopping health monitor", logrus.Fields{})
 	close(hm.stopChan)
 	hm.wg.Wait()
 }
 
-// RegisterService adds a service to health monitoring
 func (hm *HealthMonitor) RegisterService(serviceKey string, port int32) {
 	if !hm.enabled {
 		return
@@ -157,7 +151,6 @@ func (hm *HealthMonitor) RegisterService(serviceKey string, port int32) {
 	}
 }
 
-// UnregisterService removes a service from health monitoring
 func (hm *HealthMonitor) UnregisterService(serviceKey string) {
 	if !hm.enabled {
 		return
@@ -174,7 +167,6 @@ func (hm *HealthMonitor) UnregisterService(serviceKey string) {
 	}
 }
 
-// IsHealthy returns the current health status of a service
 func (hm *HealthMonitor) IsHealthy(serviceKey string) (bool, *HealthStatus) {
 	if !hm.enabled {
 		return true, &HealthStatus{IsHealthy: true}
@@ -187,21 +179,14 @@ func (hm *HealthMonitor) IsHealthy(serviceKey string) (bool, *HealthStatus) {
 		// Consider service stale if not checked recently
 		staleDuration := hm.checkInterval * 3
 		if time.Since(status.LastChecked) > staleDuration {
-			LogDebug("Service health status is stale", logrus.Fields{
-				"service":      serviceKey,
-				"last_checked": status.LastChecked,
-				"stale_after":  staleDuration,
-			})
 			return false, status
 		}
 		return status.IsHealthy, status
 	}
 
-	// Service not monitored, assume healthy
 	return true, &HealthStatus{IsHealthy: true}
 }
 
-// GetAllHealthStatus returns health status for all monitored services
 func (hm *HealthMonitor) GetAllHealthStatus() map[string]*HealthStatus {
 	if !hm.enabled {
 		return make(map[string]*HealthStatus)
@@ -226,7 +211,7 @@ func (hm *HealthMonitor) GetAllHealthStatus() map[string]*HealthStatus {
 	return result
 }
 
-// monitorLoop runs the main health monitoring loop
+// monitorLoop runs the main health monitoring loop.
 func (hm *HealthMonitor) monitorLoop() {
 	defer hm.wg.Done()
 
@@ -243,7 +228,7 @@ func (hm *HealthMonitor) monitorLoop() {
 	}
 }
 
-// performHealthChecks checks health of all registered services
+// performHealthChecks checks health of all registered services.
 func (hm *HealthMonitor) performHealthChecks() {
 	hm.cacheLock.RLock()
 	servicesToCheck := make(map[string]int32)
@@ -276,7 +261,7 @@ func (hm *HealthMonitor) performHealthChecks() {
 	wg.Wait()
 }
 
-// checkServiceHealth performs a health check on a specific service
+// checkServiceHealth performs a health check on a specific service.
 func (hm *HealthMonitor) checkServiceHealth(serviceKey string, port int32) {
 	startTime := time.Now()
 
@@ -342,11 +327,11 @@ func (hm *HealthMonitor) checkServiceHealth(serviceKey string, port int32) {
 	}
 }
 
-// performHealthCheck executes the actual health check
+// performHealthCheck executes the actual health check.
 func (hm *HealthMonitor) performHealthCheck(port int32) (bool, error) {
 	// Try TCP connection first (fastest)
 	if err := hm.checkTCPConnection(port); err != nil {
-		return false, fmt.Errorf("TCP check failed: %v", err)
+		return false, fmt.Errorf("TCP check failed: %w", err)
 	}
 
 	// Try HTTP request (more thorough)
@@ -363,7 +348,7 @@ func (hm *HealthMonitor) performHealthCheck(port int32) (bool, error) {
 	return true, nil
 }
 
-// checkTCPConnection performs a simple TCP connection test
+// checkTCPConnection performs a simple TCP connection test.
 func (hm *HealthMonitor) checkTCPConnection(port int32) error {
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), hm.timeout)
 	if err != nil {
@@ -373,7 +358,7 @@ func (hm *HealthMonitor) checkTCPConnection(port int32) error {
 	return nil
 }
 
-// checkHTTPEndpoint performs an HTTP health check
+// checkHTTPEndpoint performs an HTTP health check.
 func (hm *HealthMonitor) checkHTTPEndpoint(port int32) error {
 	client := &http.Client{
 		Timeout: hm.timeout,
@@ -401,10 +386,10 @@ func (hm *HealthMonitor) checkHTTPEndpoint(port int32) error {
 		}
 	}
 
-	return fmt.Errorf("all HTTP endpoints returned 5xx errors")
+	return errors.New("all HTTP endpoints returned 5xx errors")
 }
 
-// GetHealthMonitor returns the global health monitor instance
+// GetHealthMonitor returns the global health monitor instance.
 func GetHealthMonitor() *HealthMonitor {
 	if globalHealthMonitor == nil {
 		globalHealthMonitor = NewHealthMonitor(healthConfig)
@@ -412,7 +397,7 @@ func GetHealthMonitor() *HealthMonitor {
 	return globalHealthMonitor
 }
 
-// InitializeHealthMonitor initializes and starts the global health monitor
+// InitializeHealthMonitor initializes and starts the global health monitor.
 func InitializeHealthMonitor() {
 	if globalHealthMonitor == nil {
 		globalHealthMonitor = NewHealthMonitor(healthConfig)
@@ -431,7 +416,7 @@ func InitializeHealthMonitor() {
 	}
 }
 
-// isBackendHealthy is a convenience function for the proxy
+// isBackendHealthy is a convenience function for the proxy.
 func isBackendHealthy(serviceKey string) bool {
 	if globalHealthMonitor == nil {
 		return true // Assume healthy if monitor not initialized
@@ -440,14 +425,14 @@ func isBackendHealthy(serviceKey string) bool {
 	return healthy
 }
 
-// registerServiceForMonitoring registers a service when port-forward is created
+// registerServiceForMonitoring registers a service when port-forward is created.
 func registerServiceForMonitoring(serviceKey string, port int32) {
 	if globalHealthMonitor != nil {
 		globalHealthMonitor.RegisterService(serviceKey, port)
 	}
 }
 
-// unregisterServiceFromMonitoring removes a service when port-forward is cleaned up
+// unregisterServiceFromMonitoring removes a service when port-forward is cleaned up.
 func unregisterServiceFromMonitoring(serviceKey string) {
 	if globalHealthMonitor != nil {
 		globalHealthMonitor.UnregisterService(serviceKey)

@@ -340,7 +340,7 @@ func LogRetry(attempt int, delay string, err error) {
 	}).Warn("🔄 Retrying connection")
 }
 
-func LogRetryWithTiming(attempt int, delay string, err error, attemptDuration time.Duration) {
+func LogRetryWithTiming(attempt uint, delay string, err error, attemptDuration time.Duration) {
 	log.WithFields(logrus.Fields{
 		"attempt":    attempt,
 		"delay":      delay,
@@ -355,7 +355,7 @@ func LogRetrySuccess(attempt int) {
 	}).Info("✅ Connection successful after retry")
 }
 
-func LogRetrySuccessWithTiming(attempt int, attemptDuration, totalDuration time.Duration) {
+func LogRetrySuccessWithTiming(attempt uint, attemptDuration, totalDuration time.Duration) {
 	log.WithFields(logrus.Fields{
 		"attempt":    attempt,
 		"attempt_ms": attemptDuration.Milliseconds(),
@@ -370,7 +370,7 @@ func LogRetryFailed(totalAttempts int, err error) {
 	}).Error("🔴 Connection failed after all retries")
 }
 
-func LogRetryFailedWithTiming(totalAttempts int, err error, totalDuration time.Duration) {
+func LogRetryFailedWithTiming(totalAttempts uint, err error, totalDuration time.Duration) {
 	log.WithFields(logrus.Fields{
 		"total_attempts": totalAttempts,
 		"error":          err.Error(),
@@ -385,7 +385,7 @@ func LogBackendHealth(port int32, status string) {
 	}).Debug("🏥 Backend health check")
 }
 
-func LogConnectionCanceled(method, path string, attempt int) {
+func LogConnectionCanceled(method, path string, attempt uint) {
 	log.WithFields(logrus.Fields{
 		"method":  method,
 		"path":    path,
@@ -402,7 +402,7 @@ func LogNonRetryableError(method, path string, err error, isGRPC bool) {
 	}).Error("❌ Non-retryable error")
 }
 
-func LogRetryAttempt(attempt, maxRetries int, method, path string, isGRPC bool) {
+func LogRetryAttempt(attempt, maxRetries uint, method, path string, isGRPC bool) {
 	log.WithFields(logrus.Fields{
 		"attempt":     attempt,
 		"max_retries": maxRetries,

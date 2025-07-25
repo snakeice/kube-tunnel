@@ -200,13 +200,13 @@ func createTransport(isHTTPS bool, protocol string) http.RoundTripper {
 }
 
 // getRetryConfig returns retry configuration from environment variables.
-func getRetryConfig() (maxRetries int, baseDelay time.Duration) {
-	maxRetries = 2                     // Reduced from 3 for faster failures
-	baseDelay = 100 * time.Millisecond // Reduced from 200ms
+func getRetryConfig() (uint, time.Duration) {
+	maxRetries := uint(2)
+	baseDelay := 100 * time.Millisecond
 
 	if envRetries := os.Getenv("PROXY_MAX_RETRIES"); envRetries != "" {
 		if parsed, err := strconv.Atoi(envRetries); err == nil && parsed >= 0 && parsed <= 10 {
-			maxRetries = parsed
+			maxRetries = uint(parsed)
 		}
 	}
 
@@ -222,7 +222,7 @@ func getRetryConfig() (maxRetries int, baseDelay time.Duration) {
 // retryableTransport wraps a transport with retry logic for connection failures.
 type retryableTransport struct {
 	base       http.RoundTripper
-	maxRetries int
+	maxRetries uint
 	baseDelay  time.Duration
 	isGRPC     bool
 }
@@ -234,7 +234,7 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	// Log initial attempt
 	LogRetryAttempt(0, rt.maxRetries, req.Method, req.URL.Path, rt.isGRPC)
 
-	for attempt := 0; attempt <= rt.maxRetries; attempt++ {
+	for attempt := uint(0); attempt <= rt.maxRetries; attempt++ {
 		attemptStartTime := time.Now()
 		// Check if context is canceled before each attempt
 		select {
@@ -274,7 +274,7 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		if attempt < rt.maxRetries {
 			delay := min(
 				// Faster exponential backoff
-				rt.baseDelay*time.Duration(1<<uint(attempt)),
+				rt.baseDelay*time.Duration(1<<attempt),
 				// Cap at 1 second instead of 5
 				1*time.Second)
 
@@ -346,7 +346,7 @@ func healthCheckBackend(port int32, timeout time.Duration) error {
 type protocolFallbackTransport struct {
 	port       int32
 	isGRPC     bool
-	maxRetries int
+	maxRetries uint
 	baseDelay  time.Duration
 }
 
@@ -639,7 +639,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, fmt.Sprintf("Bad Gateway: %v", err), http.StatusBadGateway)
 			}
 		},
-		FlushInterval: time.Millisecond * 50, // Reduced from 100ms for faster streaming
+		FlushInterval: time.Millisecond * 50,
 	}
 
 	// Log retry configuration for this request
@@ -741,7 +741,7 @@ func servicesHandler(w http.ResponseWriter, r *http.Request, zeroconfServer *Zer
 	}).Info("📋 Services list requested")
 }
 
-// healthStatusHandler provides health status for all monitored services
+// healthStatusHandler provides health status for all monitored services.
 func healthStatusHandler(w http.ResponseWriter, r *http.Request) {
 	protocolInfo := getProtocolInfo(r)
 
@@ -789,7 +789,7 @@ func healthStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}).Info("📊 Health status requested")
 }
 
-// healthMetricsHandler provides aggregate health metrics
+// healthMetricsHandler provides aggregate health metrics.
 func healthMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	protocolInfo := getProtocolInfo(r)
 
@@ -810,7 +810,7 @@ func healthMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	unhealthyServices := 0
 	var totalResponseTime time.Duration
 	var maxResponseTime time.Duration
-	var minResponseTime time.Duration = time.Hour // Initialize to high value
+	var minResponseTime = time.Hour // Initialize to high value
 
 	for _, status := range allStatus {
 		if status.IsHealthy {

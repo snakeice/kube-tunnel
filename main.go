@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -30,7 +31,7 @@ func main() {
 		return
 	}
 
-	LogStartup("Starting kube-tunnel proxy server on port " + fmt.Sprintf("%d", *port))
+	LogStartup("Starting kube-tunnel proxy server on port " + strconv.Itoa(*port))
 
 	// Initialize health monitor after logger is set up
 	InitializeHealthMonitor()
@@ -39,10 +40,7 @@ func main() {
 	var zeroconfServer *ZeroconfServer
 	if !*noMDNS {
 		zeroconfServer = NewZeroconfServer()
-		if err := zeroconfServer.SafeStart(); err != nil {
-			LogError("Failed to start zeroconf server", err)
-			log.Warn("🌐 Continuing without zeroconf - manual DNS configuration required")
-		}
+		zeroconfServer.SafeStart()
 	}
 
 	// Set up signal handling for graceful shutdown
@@ -96,7 +94,9 @@ func main() {
 	if !*noMDNS {
 		log.Info("🌐 All *.svc.cluster.local domains will resolve to this proxy")
 	}
-	log.Info(fmt.Sprintf("💡 Test: curl http://my-service.default.svc.cluster.local:%d/health", *port))
+	log.Info(
+		fmt.Sprintf("💡 Test: curl http://my-service.default.svc.cluster.local:%d/health", *port),
+	)
 	log.Info(fmt.Sprintf("📊 Health monitoring: http://localhost:%d/health/status", *port))
 	log.Info(fmt.Sprintf("📈 Health metrics: http://localhost:%d/health/metrics", *port))
 
