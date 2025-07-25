@@ -1,0 +1,4 @@
+
+[tasks.install-app]
+description = "Install dependencies and build the project"
+run = "go build -o ~/go/bin/kube-tunnel ."

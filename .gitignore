@@ -13,3 +13,11 @@
 # Go workspace file
 go.work
 __debug_bin*
+kube-tunnel
+tmp/
+
+# Generated certificates
+*.crt
+*.key
+server.crt
+server.key

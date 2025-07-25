@@ -4,23 +4,20 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/sirupsen/logrus"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
 )
 
-func startPortForward(ctx context.Context, config *rest.Config, namespace, pod string, localPort, remotePort int) error {
-	log.Printf("Setting up port-forward: %s/%s %d:%d", namespace, pod, localPort, remotePort)
-
+func startPortForward(ctx context.Context, config *rest.Config, namespace, pod string, localPort, remotePort int32) error {
 	transport, upgrader, err := spdy.RoundTripperFor(config)
 	if err != nil {
-		log.Printf("Failed to create SPDY round tripper: %v", err)
-		return err
+		return fmt.Errorf("failed to create SPDY round tripper: %v", err)
 	}
 
 	hostIP := strings.TrimPrefix(config.Host, "https://")
@@ -30,35 +27,32 @@ func startPortForward(ctx context.Context, config *rest.Config, namespace, pod s
 		Host:   hostIP,
 	}
 
-	log.Printf("Port-forward URL: %s", url.String())
-
 	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, "POST", url)
 	ports := []string{fmt.Sprintf("%d:%d", localPort, remotePort)}
 
-	log.Printf("Creating port-forward dialer for ports: %v", ports)
-
 	out, errOut := new(bytes.Buffer), new(bytes.Buffer)
-	fw, err := portforward.New(dialer, ports, ctx.Done(), nil, out, errOut)
+	readyChan := make(chan struct{})
+	fw, err := portforward.New(dialer, ports, ctx.Done(), readyChan, out, errOut)
 	if err != nil {
-		log.Printf("Failed to create port-forwarder: %v", err)
-		return err
+		return fmt.Errorf("failed to create port-forwarder: %v", err)
 	}
 
-	log.Printf("Starting port-forward for %s/%s", namespace, pod)
-	err = fw.ForwardPorts()
-
-	if err != nil {
-		log.Printf("Port-forward failed for %s/%s: %v", namespace, pod, err)
-		if errOut.Len() > 0 {
-			log.Printf("Port-forward stderr: %s", errOut.String())
+	// Start port forwarding in a goroutine
+	go func() {
+		if err := fw.ForwardPorts(); err != nil {
+			LogDebug("Port-forward ended", logrus.Fields{
+				"namespace": namespace,
+				"pod":       pod,
+				"error":     err.Error(),
+			})
 		}
-	} else {
-		log.Printf("Port-forward completed for %s/%s", namespace, pod)
-	}
+	}()
 
-	if out.Len() > 0 {
-		log.Printf("Port-forward output: %s", out.String())
+	// Wait for port-forward to be ready
+	select {
+	case <-readyChan:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-
-	return err
 }
