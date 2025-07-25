@@ -1,0 +1,201 @@
+name: Bug Report
+description: File a bug report to help us improve kube-tunnel
+title: "[Bug]: "
+labels: ["bug", "triage"]
+assignees:
+  - snakeice
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+
+        Please provide as much detail as possible to help us understand and reproduce the issue.
+
+  - type: input
+    id: version
+    attributes:
+      label: kube-tunnel Version
+      description: What version of kube-tunnel are you running?
+      placeholder: "v1.0.0 or commit hash"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: What platform are you running on?
+      options:
+        - Linux (amd64)
+        - Linux (arm64)
+        - macOS (Intel)
+        - macOS (Apple Silicon)
+        - Windows (amd64)
+        - Docker/Container
+        - Kubernetes
+        - Other (specify in description)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation Method
+      description: How did you install kube-tunnel?
+      options:
+        - Binary release
+        - Docker image
+        - Homebrew
+        - Go install
+        - Built from source
+        - Package manager (apt/yum/etc)
+        - Other (specify in description)
+    validations:
+      required: true
+
+  - type: textarea
+    id: bug-description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is
+      placeholder: Describe what happened and what you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior
+      placeholder: |
+        1. Start kube-tunnel with: `./kube-tunnel -port=80`
+        2. Make request: `curl http://service.namespace.svc.cluster.local/api`
+        3. See error: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: A clear and concise description of what you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual Behavior
+      description: What actually happened instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and Error Messages
+      description: |
+        Please provide relevant logs. Run with `LOG_LEVEL=debug` for more detailed output.
+
+        **Tip:** You can attach log files by clicking this area to highlight it and then dragging files in.
+      render: shell
+      placeholder: |
+        # Enable debug logging first:
+        export LOG_LEVEL=debug
+        ./kube-tunnel
+
+        # Paste error messages and logs here
+
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Configuration
+      description: |
+        Please provide your configuration and environment variables
+      render: shell
+      placeholder: |
+        # Command used to start kube-tunnel:
+        ./kube-tunnel -port=80
+
+        # Environment variables:
+        export HEALTH_MONITOR_ENABLED=true
+        export PROXY_MAX_RETRIES=2
+
+        # Any custom configuration files or settings
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment Details
+      description: |
+        Please provide details about your environment
+      placeholder: |
+        - Kubernetes version:
+        - Go version (if building from source):
+        - Docker version (if using containers):
+        - Network setup:
+        - Any relevant system information:
+
+  - type: textarea
+    id: health-status
+    attributes:
+      label: Health Status
+      description: |
+        If the proxy is running, please provide health status output
+      render: json
+      placeholder: |
+        # Run these commands if kube-tunnel is running:
+        curl http://localhost:80/health
+        curl http://localhost:80/health/status
+        curl http://localhost:80/health/metrics
+
+  - type: dropdown
+    id: performance-impact
+    attributes:
+      label: Performance Impact
+      description: Does this bug affect performance?
+      options:
+        - "No performance impact"
+        - "Minor performance impact"
+        - "Significant performance impact"
+        - "Complete service failure"
+        - "Unknown"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: troubleshooting
+    attributes:
+      label: Troubleshooting Done
+      description: What troubleshooting steps have you already tried?
+      options:
+        - label: Checked the documentation and README
+        - label: Searched existing issues
+        - label: Tried with debug logging enabled
+        - label: Verified Kubernetes connectivity
+        - label: Tested with different services
+        - label: Checked DNS resolution
+        - label: Verified RBAC permissions
+        - label: Tested on different platform/version
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: |
+        Add any other context about the problem here, such as:
+        - Related issues or PRs
+        - Workarounds you've tried
+        - Impact on your use case
+        - Screenshots or diagrams (if applicable)
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our Code of Conduct
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true
