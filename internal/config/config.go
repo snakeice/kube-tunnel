@@ -43,7 +43,7 @@ type HealthConfig struct {
 	RecoveryRetries int
 }
 
-func GetConfig() Config {
+func GetConfig() *Config {
 	perf := PerformanceConfig{
 		SkipHealthCheck:              false,
 		ForceHTTP2:                   true,
@@ -131,7 +131,7 @@ func GetConfig() Config {
 	if health.RecoveryRetries < 0 {
 		health.RecoveryRetries = 0
 	}
-	return Config{Performance: perf, Health: health}
+	return &Config{Performance: perf, Health: health}
 }
 
 func getEnvBool(key string, def bool) bool {

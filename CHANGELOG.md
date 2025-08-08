@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Added (since last update)
 
 - Background health monitoring system for continuous service health tracking
 - Performance optimization with configurable HTTP transport settings
@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Package manager support (Homebrew, Scoop, Winget, Snap)
 - Comprehensive CI/CD pipeline with GitHub Actions
 - Security scanning with Trivy and Cosign signing
+- Lightweight dependency injection container (`internal/app/container.go`) for explicit wiring
+- Struct-based `Proxy` handler with method-scoped health endpoints
+- Cache now registers/unregisters services with the health monitor automatically
+- JSON responses unified via `encoding/json` encoder across health endpoints
+- Network interface name validation (regex) in DNS resolver with documented `#nosec` justification
 
 ### Changed
 
@@ -29,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed named returns for better code readability
 - **DNS resolver code translated from Portuguese to English for better maintainability**
 - **DNS resolver now uses structured logging with the logger package**
+- Replaced remaining global singletons (proxy, health monitor accessors, port-forward cache) with injected dependencies
+- Port-forward setup & validation logic refactored for clearer error paths and structured logging
+- Health handlers migrated from package-level functions to methods on `Proxy` (clean architecture alignment)
+- Cache constructor now accepts a `*health.Monitor` enabling lifecycle integration
+- Reduced long lines & improved formatting (golines compliance)
 
 ### Fixed
 
@@ -36,6 +46,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed health monitor initialization order dependency
 - Improved error handling and graceful degradation
 - **Enhanced DNS error messages with clearer English descriptions**
+- Removed stray legacy code paths causing potential nil monitor lookups during refactor
+- Eliminated syntax issues introduced during refactor (cache file reconstruction)
+
+### Removed
+
+- Global health monitor accessor functions (`GetHealthMonitor`, etc.)
+- Legacy package-level proxy handler (`legacyHandler`) and health HTTP handlers
+- Global port-forward cache singleton in favor of injected cache instance
+
+### Security (hardening)
+
+- Added strict interface name validation to DNS revert/setup to mitigate command injection vectors
+
+### Deprecated
+
+- Package-level proxy and health handler functions (now fully superseded by `Proxy` methods); will be removed entirely in next minor release if no external usage surfaces
 
 ### Performance
 

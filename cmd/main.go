@@ -10,11 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/snakeice/kube-tunnel/internal/config"
-	"github.com/snakeice/kube-tunnel/internal/dns"
-	"github.com/snakeice/kube-tunnel/internal/health"
+	"github.com/snakeice/kube-tunnel/internal/app"
 	"github.com/snakeice/kube-tunnel/internal/logger"
-	"github.com/snakeice/kube-tunnel/internal/proxy"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 )
@@ -32,15 +29,15 @@ func main() {
 		return
 	}
 	logger.LogStartup("Starting kube-tunnel proxy server on port " + strconv.Itoa(*port))
-	conf := config.GetConfig()
-	health.InitializeHealthMonitor(conf)
+	container, err := app.Build()
+	if err != nil {
+		logger.LogError("Failed to build application container", err)
+		os.Exit(1)
+	}
+	conf := container.Cfg
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", proxy.Handler)
-	mux.HandleFunc("/health", proxy.HealthCheckHandler)
-	mux.HandleFunc("/health/status", proxy.HealthStatusHandler)
-	mux.HandleFunc("/health/metrics", proxy.HealthMetricsHandler)
+	mux := container.Mux
 
 	h2s := &http2.Server{
 		MaxConcurrentStreams:         conf.Performance.MaxConcurrentStreams,
@@ -60,11 +57,6 @@ func main() {
 	}
 	if err := http2.ConfigureServer(server, h2s); err != nil {
 		logger.LogError("Failed to configure HTTP/2 server", err)
-		os.Exit(1)
-	}
-	dnsServer := dns.NewProxyDNS()
-	if err := dnsServer.Start(); err != nil {
-		logger.LogError("Failed to start DNS server", err)
 		os.Exit(1)
 	}
 	go func() {
@@ -89,8 +81,8 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		logger.LogError("Server forced to shutdown", err)
 	}
-	if err := dnsServer.Stop(); err != nil {
-		logger.LogError("Failed to stop DNS server", err)
+	if err := container.Shutdown(ctx); err != nil {
+		logger.LogError("Failed to shutdown application cleanly", err)
 	}
 	logger.Log.Info("✅ Server stopped gracefully")
 }

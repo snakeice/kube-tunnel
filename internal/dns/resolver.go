@@ -1,8 +1,10 @@
 package dns
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"github.com/snakeice/kube-tunnel/internal/logger"
@@ -72,6 +74,15 @@ func RevertDNS() error {
 		}
 	}
 
+	// Validate interface name: allow typical chars (alnum, - _ . :) to mitigate injection risk.
+	// While exec.Command with fixed args is already safe from shell injection, we add a sanity
+	// check to satisfy gosec (G204) and ensure we don't accidentally pass unexpected values.
+	validIface := regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
+	if !validIface.MatchString(configuredInterface) {
+		return errors.New("invalid network interface name")
+	}
+
+	// #nosec G204 -- arguments are fixed strings plus validated interface name.
 	cmd := exec.Command("sudo", "resolvectl", "revert", configuredInterface)
 	logger.Log.Infof("Executing: %s", strings.Join(cmd.Args, " "))
 	out, err := cmd.CombinedOutput()

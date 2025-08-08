@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -19,10 +18,12 @@ import (
 	"golang.org/x/net/http2"
 
 	"github.com/snakeice/kube-tunnel/internal/config"
-	"github.com/snakeice/kube-tunnel/internal/health"
 	"github.com/snakeice/kube-tunnel/internal/logger"
 	"github.com/snakeice/kube-tunnel/internal/tools"
 )
+
+// NOTE: Legacy global singleton and handlers removed. All request handling
+// now goes through the struct in handler.go with injected dependencies.
 
 // responseWriterWrapper wraps http.ResponseWriter to capture metrics.
 type responseWriterWrapper struct {
@@ -397,83 +398,7 @@ func parseAndValidateHost(
 
 // setupPortForward ensures a port-forward is established for the service.
 // It writes an error response if the port-forward fails.
-func setupPortForward(
-	w http.ResponseWriter,
-	service, namespace string,
-	isGRPC bool,
-) (int, error) {
-	// Use the cache from the default proxy instance so that legacy handler
-	// path still works after introducing the Proxy struct.
-	localPort, err := getDefault().cache.EnsurePortForward(service, namespace)
-	if err != nil {
-		logger.LogError(fmt.Sprintf("Port-forward failed for %s.%s", service, namespace), err)
-		if isGRPC {
-			w.Header().Set("Content-Type", "application/grpc")
-			w.Header().Set("Grpc-Status", "14") // UNAVAILABLE
-			w.Header().Set("Grpc-Message", "Service Unavailable")
-			w.WriteHeader(http.StatusOK)
-		} else {
-			http.Error(w, "Error creating port-forward", http.StatusInternalServerError)
-		}
-		return 0, err
-	}
-	logger.LogDebug(
-		"Port-forward ready",
-		logrus.Fields{"service": service, "namespace": namespace, "port": localPort},
-	)
-	return localPort, nil
-}
-
-// checkBackendHealth logs the health status of the backend and performs a quick check if unhealthy.
-func checkBackendHealth(service, namespace string, localPort int) {
-	serviceKey := fmt.Sprintf("%s.%s", service, namespace)
-	healthMonitor := health.GetHealthMonitor()
-	if healthMonitor == nil {
-		return // No health monitor configured
-	}
-
-	healthStatus := healthMonitor.IsHealthy(serviceKey)
-	if healthStatus == nil {
-		return // No status available for this service yet
-	}
-
-	// Simplify nested ifs: early return on healthy status
-	if healthStatus.IsHealthy {
-		logger.LogDebug("Backend healthy according to monitor", logrus.Fields{
-			"service":     service,
-			"namespace":   namespace,
-			"port":        localPort,
-			"response_ms": healthStatus.ResponseTime.Milliseconds(),
-		})
-		return
-	}
-
-	// Unhealthy path
-	logger.LogDebug("Backend reported unhealthy by monitor", logrus.Fields{
-		"service":       service,
-		"namespace":     namespace,
-		"port":          localPort,
-		"failure_count": healthStatus.FailureCount,
-		"last_error":    healthStatus.ErrorMessage,
-		"last_healthy":  healthStatus.LastHealthy,
-	})
-
-	// Perform quick health check if not skipped
-	cfg := config.GetConfig()
-	if cfg.Performance.SkipHealthCheck {
-		return
-	}
-	if err := healthCheckBackend(localPort, 500*time.Millisecond); err != nil {
-		logger.LogBackendHealth(localPort, "unhealthy")
-		logger.LogDebug("Quick health validation failed",
-			logrus.Fields{
-				"port":  localPort,
-				"error": err.Error(),
-			})
-	} else {
-		logger.LogBackendHealth(localPort, "recovered")
-	}
-}
+// setupPortForward and checkBackendHealth now live on the Proxy struct (handler.go).
 
 // setGRPCHeaders sets the necessary headers for a gRPC request.
 func setGRPCHeaders(req *http.Request) {
@@ -583,259 +508,35 @@ func createReverseProxy(
 	rp := &httputil.ReverseProxy{
 		Director:  proxyDirector(localPort, isGRPC),
 		Transport: transport,
-		ModifyResponse: proxyModifyResponse( //nolint:bodyclose // Handled in the response writer
+		ModifyResponse: proxyModifyResponse( //nolint:bodyclose // handled via wrapper
 			w,
 			isGRPC,
 		),
 		ErrorHandler:  proxyErrorHandler(isGRPC),
 		FlushInterval: 50 * time.Millisecond,
 	}
-	// Suppress default noisy log output; route through custom adapter
 	rp.ErrorLog = log.New(&reverseProxyLogAdapter{}, "", 0)
 	return rp
 }
 
-// reverseProxyLogAdapter intercepts standard library ReverseProxy logs and downgrades
-// expected transient network errors to debug level while preserving other messages.
+// reverseProxyLogAdapter suppresses noisy reverse proxy errors while retaining debug info.
 type reverseProxyLogAdapter struct{}
 
-func (a *reverseProxyLogAdapter) Write(p []byte) (int, error) { //nolint:revive // adapter signature
+func (a *reverseProxyLogAdapter) Write(p []byte) (int, error) {
 	msg := strings.TrimSpace(string(p))
 	lower := strings.ToLower(msg)
-	if strings.Contains(lower, "reverseproxy read error") && strings.Contains(lower, "read on closed response body") {
+	if strings.Contains(lower, "reverseproxy read error") &&
+		strings.Contains(lower, "read on closed response body") {
 		logger.LogDebug("Suppressed benign reverse proxy read error", logrus.Fields{"msg": msg})
 		return len(p), nil
 	}
-	if strings.Contains(lower, "reverseproxy read error") && strings.Contains(lower, "connection reset by peer") {
+	if strings.Contains(lower, "reverseproxy read error") &&
+		strings.Contains(lower, "connection reset by peer") {
 		logger.LogDebug("Upstream connection reset", logrus.Fields{"msg": msg})
 		return len(p), nil
 	}
 	logger.LogDebug("ReverseProxy log", logrus.Fields{"msg": msg})
 	return len(p), nil
-}
-
-// legacyHandler retains the original implementation. The exported Handler symbol
-// now delegates to the struct-based handler in handler.go keeping backwards compatibility.
-func legacyHandler(w http.ResponseWriter, r *http.Request) {
-	startTime := time.Now()
-	isGRPC := isGRPCRequest(r)
-	protocolInfo := getProtocolInfo(r)
-
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-	r = r.WithContext(ctx)
-
-	requestSize := max(r.ContentLength, 0)
-	logger.LogRequest(r.Method, r.URL.Path, protocolInfo, r.RemoteAddr)
-	logger.LogRequestStart(r.Method, r.URL.Path, isGRPC, requestSize)
-
-	if handleCORS(w, r) {
-		return
-	}
-
-	service, namespace, err := parseAndValidateHost(w, r, isGRPC)
-	if err != nil {
-		return // Error response already sent
-	}
-
-	localPort, err := setupPortForward(w, service, namespace, isGRPC)
-	if err != nil {
-		return // Error response already sent
-	}
-
-	checkBackendHealth(service, namespace, localPort)
-
-	responseWriter := &responseWriterWrapper{ResponseWriter: w, statusCode: 200}
-	proxy := createReverseProxy(localPort, isGRPC, responseWriter)
-
-	logger.LogDebug("Proxying with protocol fallback", logrus.Fields{
-		"service": service, "namespace": namespace, "is_grpc": isGRPC, "local_port": localPort,
-	})
-
-	proxyStartTime := time.Now()
-	proxy.ServeHTTP(responseWriter, r)
-	proxyDuration := time.Since(proxyStartTime)
-	totalDuration := time.Since(startTime)
-
-	logger.LogProxyMetrics(
-		service,
-		namespace,
-		localPort,
-		proxyDuration,
-		responseWriter.statusCode < 400,
-	)
-	logger.LogResponseMetrics(
-		r.Method,
-		r.URL.Path,
-		responseWriter.statusCode,
-		totalDuration,
-		responseWriter.responseSize,
-		isGRPC,
-	)
-}
-
-// HealthCheckHandler provides a simple health check endpoint.
-func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
-	protocolInfo := getProtocolInfo(r)
-
-	response := map[string]any{
-		"status":   "healthy",
-		"protocol": protocolInfo,
-		"version":  "1.0.0",
-		"features": []string{"http/1.1", "h2c", "h2", "grpc"},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	// Simple JSON response
-	fmt.Fprintf(w, `{
-		"status": "%s",
-		"protocol": "%s",
-		"version": "%s",
-		"features": ["http/1.1", "h2c", "h2", "grpc"]
-	}`, response["status"], protocolInfo, response["version"])
-
-	logger.LogHealthCheck(protocolInfo)
-}
-
-// HealthStatusHandler provides health status for all monitored services.
-func HealthStatusHandler(w http.ResponseWriter, r *http.Request) {
-	protocolInfo := getProtocolInfo(r)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	healthMonitor := health.GetHealthMonitor()
-	var allStatus map[string]*health.Status
-	if healthMonitor != nil {
-		allStatus = healthMonitor.GetAllHealthStatus()
-	} else {
-		allStatus = make(map[string]*health.Status)
-	}
-
-	// Convert to API-friendly format
-	statusList := make([]map[string]any, 0, len(allStatus))
-	for serviceKey, status := range allStatus {
-		statusList = append(statusList, map[string]any{
-			"service":       serviceKey,
-			"healthy":       status.IsHealthy,
-			"last_checked":  status.LastChecked.Format(time.RFC3339),
-			"last_healthy":  status.LastHealthy.Format(time.RFC3339),
-			"failure_count": status.FailureCount,
-			"response_time": status.ResponseTime.Milliseconds(),
-			"error_message": status.ErrorMessage,
-		})
-	}
-
-	cfg := config.GetConfig()
-	response := map[string]any{
-		"status":          "ok",
-		"protocol":        protocolInfo,
-		"monitor_enabled": cfg.Health.Enabled,
-		"check_interval":  cfg.Health.CheckInterval.String(),
-		"total_services":  len(allStatus),
-		"services":        statusList,
-		"timestamp":       time.Now().Format(time.RFC3339),
-	}
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Log.WithError(err).Error("Failed to encode health status response")
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	logger.Log.WithFields(logrus.Fields{
-		"protocol":      protocolInfo,
-		"service_count": len(allStatus),
-		"client_ip":     r.RemoteAddr,
-	}).Info("📊 Health status requested")
-}
-
-// HealthMetricsHandler provides aggregate health metrics.
-func HealthMetricsHandler(w http.ResponseWriter, r *http.Request) {
-	protocolInfo := getProtocolInfo(r)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	healthMonitor := health.GetHealthMonitor()
-	var allStatus map[string]*health.Status
-	if healthMonitor != nil {
-		allStatus = healthMonitor.GetAllHealthStatus()
-	} else {
-		allStatus = make(map[string]*health.Status)
-	}
-
-	// Calculate metrics
-	totalServices := len(allStatus)
-	healthyServices := 0
-	unhealthyServices := 0
-	var totalResponseTime time.Duration
-	var maxResponseTime time.Duration
-	var minResponseTime = time.Hour // Initialize to high value
-
-	for _, status := range allStatus {
-		if status.IsHealthy {
-			healthyServices++
-		} else {
-			unhealthyServices++
-		}
-
-		totalResponseTime += status.ResponseTime
-		if status.ResponseTime > maxResponseTime {
-			maxResponseTime = status.ResponseTime
-		}
-		if status.ResponseTime < minResponseTime && status.ResponseTime > 0 {
-			minResponseTime = status.ResponseTime
-		}
-	}
-
-	var avgResponseTime time.Duration
-	if totalServices > 0 {
-		avgResponseTime = totalResponseTime / time.Duration(totalServices)
-	}
-	if minResponseTime == time.Hour {
-		minResponseTime = 0
-	}
-
-	healthRatio := float64(healthyServices) / float64(max(totalServices, 1))
-
-	cfg := config.GetConfig()
-	response := map[string]any{
-		"status":             "ok",
-		"protocol":           protocolInfo,
-		"monitor_enabled":    cfg.Health.Enabled,
-		"total_services":     totalServices,
-		"healthy_services":   healthyServices,
-		"unhealthy_services": unhealthyServices,
-		"health_ratio":       fmt.Sprintf("%.2f", healthRatio),
-		"response_times": map[string]any{
-			"average_ms": avgResponseTime.Milliseconds(),
-			"min_ms":     minResponseTime.Milliseconds(),
-			"max_ms":     maxResponseTime.Milliseconds(),
-		},
-		"configuration": map[string]any{
-			"check_interval": cfg.Health.CheckInterval.String(),
-			"timeout":        cfg.Health.Timeout.String(),
-			"max_failures":   cfg.Health.MaxFailures,
-		},
-		"timestamp": time.Now().Format(time.RFC3339),
-	}
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Log.WithError(err).Error("Failed to encode health statistics response")
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	logger.Log.WithFields(logrus.Fields{
-		"protocol":         protocolInfo,
-		"total_services":   totalServices,
-		"healthy_services": healthyServices,
-		"health_ratio":     healthRatio,
-		"client_ip":        r.RemoteAddr,
-	}).Info("📈 Health metrics requested")
 }
 
 // loadTLSConfig loads TLS configuration with proper cipher suites for HTTP/2.

@@ -24,20 +24,7 @@ type Status struct {
 	Port         int
 }
 
-// HealthMonitor manages background health checks for all active services.
-// UnregisterServiceFromMonitoring removes a service when port-forward is cleaned up.
-func UnregisterServiceFromMonitoring(serviceKey string) {
-	if globalHealthMonitor != nil {
-		globalHealthMonitor.UnregisterService(serviceKey)
-	}
-}
-
-// StopHealthMonitor gracefully stops the health monitoring background tasks.
-func StopHealthMonitor() {
-	if globalHealthMonitor != nil {
-		globalHealthMonitor.Stop()
-	}
-}
+// Monitor manages background health checks for all active services.
 
 type Monitor struct {
 	healthCache   map[string]*Status
@@ -50,9 +37,7 @@ type Monitor struct {
 	wg            sync.WaitGroup
 }
 
-var (
-	globalHealthMonitor *Monitor
-)
+// Global state removed: instances are now created and owned by the application container.
 
 func NewHealthMonitor(config config.HealthConfig) *Monitor {
 	return &Monitor{
@@ -387,42 +372,4 @@ func (hm *Monitor) checkHTTPEndpoint(port int) error {
 	return errors.New("all HTTP endpoints returned 5xx errors")
 }
 
-// GetHealthMonitor returns the global health monitor instance.
-func GetHealthMonitor() *Monitor {
-	return globalHealthMonitor
-}
-
-// InitializeHealthMonitor initializes and starts the global health monitor.
-func InitializeHealthMonitor(cfg config.Config) {
-	if globalHealthMonitor == nil {
-		globalHealthMonitor = NewHealthMonitor(cfg.Health)
-		logger.LogDebug("Health monitor initialized", logrus.Fields{
-			"enabled":      cfg.Health.Enabled,
-			"interval":     cfg.Health.CheckInterval,
-			"timeout":      cfg.Health.Timeout,
-			"max_failures": cfg.Health.MaxFailures,
-		})
-	}
-	if cfg.Health.Enabled && globalHealthMonitor != nil {
-		globalHealthMonitor.Start()
-		logger.LogDebug("Health monitor started successfully", logrus.Fields{})
-	} else if !cfg.Health.Enabled {
-		logger.LogDebug("Health monitor disabled by configuration", logrus.Fields{})
-	}
-}
-
-// isBackendHealthy is a convenience function for the proxy.
-func IsBackendHealthy(serviceKey string) bool {
-	if globalHealthMonitor == nil {
-		return true // Assume healthy if monitor not initialized
-	}
-	status := globalHealthMonitor.IsHealthy(serviceKey)
-	return status.IsHealthy
-}
-
-// registerServiceForMonitoring registers a service when port-forward is created.
-func RegisterServiceForMonitoring(serviceKey string, port int) {
-	if globalHealthMonitor != nil {
-		globalHealthMonitor.RegisterService(serviceKey, port)
-	}
-}
+// Removed: global accessor helpers; use Monitor instance directly.
