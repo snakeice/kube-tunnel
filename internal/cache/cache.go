@@ -1,4 +1,4 @@
-package main
+package cache
 
 import (
 	"context"
@@ -9,6 +9,11 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/snakeice/kube-tunnel/internal/health"
+	"github.com/snakeice/kube-tunnel/internal/k8s"
+	"github.com/snakeice/kube-tunnel/internal/logger"
+	"github.com/snakeice/kube-tunnel/internal/tools"
 )
 
 const idleTimeout = 5 * time.Minute
@@ -24,7 +29,7 @@ var (
 	cacheLock = sync.Mutex{}
 )
 
-func ensurePortForward(service, namespace string) (int32, error) {
+func EnsurePortForward(service, namespace string) (int32, error) {
 	startTime := time.Now()
 	key := fmt.Sprintf("%s.%s", service, namespace)
 
@@ -32,11 +37,11 @@ func ensurePortForward(service, namespace string) (int32, error) {
 	defer cacheLock.Unlock()
 
 	if pf, ok := cache[key]; ok {
-		LogPortForwardReuse(service, namespace, pf.LocalPort)
+		logger.LogPortForwardReuse(service, namespace, pf.LocalPort)
 		pf.LastUsed = time.Now()
 
 		// Check health status from background monitor first
-		if isBackendHealthy(key) {
+		if health.IsBackendHealthy(key) {
 			return pf.LocalPort, nil
 		}
 
@@ -47,22 +52,22 @@ func ensurePortForward(service, namespace string) (int32, error) {
 		}
 
 		// If validation fails, remove from cache and create new
-		LogDebug("Cached port-forward is dead, removing from cache", logrus.Fields{
+		logger.LogDebug("Cached port-forward is dead, removing from cache", logrus.Fields{
 			"service":   service,
 			"namespace": namespace,
 			"port":      pf.LocalPort,
 		})
 		pf.Cancel()
 		delete(cache, key)
-		unregisterServiceFromMonitoring(key)
+		health.UnregisterServiceFromMonitoring(key)
 	}
 
-	localPort, err := getFreePort()
+	localPort, err := tools.GetFreePort()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get free port: %w", err)
 	}
 
-	config, err := getKubeConfig()
+	config, err := k8s.GetKubeConfig()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get kube config: %w", err)
 	}
@@ -72,23 +77,30 @@ func ensurePortForward(service, namespace string) (int32, error) {
 		return 0, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 
-	podName, remotePort, err := getPodNameForService(clientset, namespace, service)
+	podName, remotePort, err := k8s.GetPodNameForService(clientset, namespace, service)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get pod for service %s: %w", key, err)
 	}
 
 	setupDuration := time.Since(startTime)
-	LogPortForwardWithTiming(service, namespace, podName, localPort, remotePort, setupDuration)
+	logger.LogPortForwardWithTiming(
+		service,
+		namespace,
+		podName,
+		localPort,
+		remotePort,
+		setupDuration,
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	portForwardStartTime := time.Now()
 	go func() {
-		if err := startPortForward(ctx, config, namespace, podName, localPort, remotePort); err != nil {
+		if err := k8s.StartPortForward(ctx, config, namespace, podName, localPort, remotePort); err != nil {
 			portForwardDuration := time.Since(portForwardStartTime)
-			LogPortForwardError(key, err, portForwardDuration)
+			logger.LogPortForwardError(key, err, portForwardDuration)
 		} else {
 			portForwardDuration := time.Since(portForwardStartTime)
-			LogDebug("Port-forward established successfully", logrus.Fields{
+			logger.LogDebug("Port-forward established successfully", logrus.Fields{
 				"service":     service,
 				"namespace":   namespace,
 				"duration_ms": portForwardDuration.Milliseconds(),
@@ -103,7 +115,7 @@ func ensurePortForward(service, namespace string) (int32, error) {
 	}
 
 	// Register service for health monitoring
-	registerServiceForMonitoring(key, localPort)
+	health.RegisterServiceForMonitoring(key, localPort)
 
 	// Use faster validation with shorter waits
 	validationStartTime := time.Now()
@@ -112,7 +124,7 @@ func ensurePortForward(service, namespace string) (int32, error) {
 
 	for attempt := range maxRetries {
 		if err := validateConnection(localPort); err == nil {
-			log.WithFields(logrus.Fields{
+			logger.Log.WithFields(logrus.Fields{
 				"port":        localPort,
 				"attempt":     attempt + 1,
 				"duration_ms": time.Since(validationStartTime).Milliseconds(),
@@ -124,7 +136,7 @@ func ensurePortForward(service, namespace string) (int32, error) {
 			delay := baseDelay * time.Duration(attempt+1)
 			time.Sleep(delay)
 		} else {
-			log.WithFields(logrus.Fields{
+			logger.Log.WithFields(logrus.Fields{
 				"port":        localPort,
 				"attempts":    maxRetries,
 				"duration_ms": time.Since(validationStartTime).Milliseconds(),
@@ -135,7 +147,7 @@ func ensurePortForward(service, namespace string) (int32, error) {
 	go autoExpire(key)
 
 	totalDuration := time.Since(startTime)
-	LogDebug("Port-forward setup completed", logrus.Fields{
+	logger.LogDebug("Port-forward setup completed", logrus.Fields{
 		"service":        service,
 		"namespace":      namespace,
 		"local_port":     localPort,
@@ -168,11 +180,11 @@ func autoExpire(key string) {
 		}
 
 		if time.Since(session.LastUsed) > idleTimeout {
-			LogPortForwardExpire(key)
+			logger.LogPortForwardExpire(key)
 			session.Cancel()
 			delete(cache, key)
 			// Unregister from health monitoring
-			unregisterServiceFromMonitoring(key)
+			health.UnregisterServiceFromMonitoring(key)
 			cacheLock.Unlock()
 			return
 		}

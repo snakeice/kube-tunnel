@@ -1,4 +1,4 @@
-package main
+package k8s
 
 import (
 	"bytes"
@@ -12,9 +12,11 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
+
+	"github.com/snakeice/kube-tunnel/internal/logger"
 )
 
-func startPortForward(
+func StartPortForward(
 	ctx context.Context,
 	config *rest.Config,
 	namespace, pod string,
@@ -45,7 +47,7 @@ func startPortForward(
 	// Start port forwarding in a goroutine
 	go func() {
 		if err := fw.ForwardPorts(); err != nil {
-			LogDebug("Port-forward ended", logrus.Fields{
+			logger.LogDebug("Port-forward ended", logrus.Fields{
 				"namespace": namespace,
 				"pod":       pod,
 				"error":     err.Error(),

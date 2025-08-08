@@ -1,8 +1,11 @@
 
 [tasks.install-app]
 description = "Install dependencies and build the project"
-run = "go build -o ~/go/bin/kube-tunnel ."
+run = "go build -o ~/go/bin/kube-tunnel ./cmd"
 
+[tasks.lint]
+description = "Run linters"
+run = "golangci-lint run"
 
 [tools]
 go = "1.24.5"

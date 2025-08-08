@@ -1,8 +1,9 @@
-package main
+package k8s
 
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-func getKubeConfig() (*rest.Config, error) {
+func GetKubeConfig() (*rest.Config, error) {
 	if config, err := rest.InClusterConfig(); err == nil {
 		return config, nil
 	}
@@ -28,7 +29,7 @@ func getKubeConfig() (*rest.Config, error) {
 	return config, nil
 }
 
-func getPodNameForService(
+func GetPodNameForService(
 	clientset *kubernetes.Clientset,
 	namespace, service string,
 ) (string, int32, error) {

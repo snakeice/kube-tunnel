@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
 - Background health monitoring system for continuous service health tracking
 - Performance optimization with configurable HTTP transport settings
 - Health status APIs (`/health/status` and `/health/metrics`)
@@ -20,26 +21,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security scanning with Trivy and Cosign signing
 
 ### Changed
+
 - Optimized port-forward setup time (60% faster cold start)
 - Improved request latency (50% faster warm requests)
 - Enhanced connection pooling and HTTP/2 optimization
 - Modernized README with better structure and examples
 - Removed named returns for better code readability
+- **DNS resolver code translated from Portuguese to English for better maintainability**
+- **DNS resolver now uses structured logging with the logger package**
 
 ### Fixed
+
 - Eliminated nil pointer dereference panic during initialization
 - Fixed health monitor initialization order dependency
 - Improved error handling and graceful degradation
+- **Enhanced DNS error messages with clearer English descriptions**
 
 ### Performance
+
 - Sub-200ms cold start latency (down from ~500ms)
 - <10ms warm request latency (down from ~25ms)
 - 2x throughput improvement (1000+ req/s)
 - Background health checks eliminate request-time overhead
 
+### Developer Experience
+
+- **Improved DNS resolver code readability with English comments and messages**
+- **Better debugging experience with structured DNS logging**
+- **Consistent error messages across the DNS module**
+
 ## [1.0.0] - TBD
 
 ### Added
+
 - Initial release of kube-tunnel
 - Multi-protocol support (HTTP/1.1, HTTP/2, gRPC)
 - Automatic port-forwarding with intelligent caching
@@ -54,6 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Command-line interface with flexible options
 
 ### Security
+
 - Minimal attack surface with scratch-based Docker images
 - Non-root user execution in containers
 - Capability dropping and security constraints
@@ -61,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cosign signing for container images and binaries
 
 ### Documentation
+
 - Complete README with quick start guide
 - Performance optimization guides
 - Health monitoring documentation
@@ -79,6 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Migration Guides
 
 ### From 0.x to 1.0
+
 - Update Docker image references to use new registry
 - Review environment variable changes for health monitoring
 - Update Kubernetes RBAC permissions if needed

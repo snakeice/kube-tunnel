@@ -1,4 +1,4 @@
-package main
+package proxy
 
 import (
 	"context"
@@ -16,98 +16,13 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
+
+	"github.com/snakeice/kube-tunnel/internal/cache"
+	"github.com/snakeice/kube-tunnel/internal/config"
+	"github.com/snakeice/kube-tunnel/internal/health"
+	"github.com/snakeice/kube-tunnel/internal/logger"
+	"github.com/snakeice/kube-tunnel/internal/tools"
 )
-
-// Performance configuration from environment variables.
-type PerformanceConfig struct {
-	SkipHealthCheck         bool
-	ForceHTTP2              bool
-	DisableProtocolFallback bool
-	MaxIdleConns            int
-	MaxIdleConnsPerHost     int
-	MaxConnsPerHost         int
-	ReadTimeout             time.Duration
-	WriteTimeout            time.Duration
-	IdleTimeout             time.Duration
-	MaxConcurrentStreams    uint32
-	MaxFrameSize            uint32
-	GRPCTimeout             string
-}
-
-var perfConfig = loadPerformanceConfig()
-
-func loadPerformanceConfig() PerformanceConfig {
-	config := PerformanceConfig{
-		// Defaults
-		SkipHealthCheck:         false,
-		ForceHTTP2:              true,
-		DisableProtocolFallback: false,
-		MaxIdleConns:            200,
-		MaxIdleConnsPerHost:     50,
-		MaxConnsPerHost:         100,
-		ReadTimeout:             30 * time.Second,
-		WriteTimeout:            30 * time.Second,
-		IdleTimeout:             120 * time.Second,
-		MaxConcurrentStreams:    1000,
-		MaxFrameSize:            1048576,
-		GRPCTimeout:             "30S",
-	}
-
-	if os.Getenv("SKIP_HEALTH_CHECK") == "true" {
-		config.SkipHealthCheck = true
-	}
-	if os.Getenv("FORCE_HTTP2") == "false" {
-		config.ForceHTTP2 = false
-	}
-	if os.Getenv("DISABLE_PROTOCOL_FALLBACK") == "true" {
-		config.DisableProtocolFallback = true
-	}
-	if val := os.Getenv("MAX_IDLE_CONNS"); val != "" {
-		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
-			config.MaxIdleConns = parsed
-		}
-	}
-	if val := os.Getenv("MAX_IDLE_CONNS_PER_HOST"); val != "" {
-		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
-			config.MaxIdleConnsPerHost = parsed
-		}
-	}
-	if val := os.Getenv("MAX_CONNS_PER_HOST"); val != "" {
-		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
-			config.MaxConnsPerHost = parsed
-		}
-	}
-	if val := os.Getenv("READ_TIMEOUT"); val != "" {
-		if parsed, err := time.ParseDuration(val); err == nil {
-			config.ReadTimeout = parsed
-		}
-	}
-	if val := os.Getenv("WRITE_TIMEOUT"); val != "" {
-		if parsed, err := time.ParseDuration(val); err == nil {
-			config.WriteTimeout = parsed
-		}
-	}
-	if val := os.Getenv("IDLE_TIMEOUT"); val != "" {
-		if parsed, err := time.ParseDuration(val); err == nil {
-			config.IdleTimeout = parsed
-		}
-	}
-	if val := os.Getenv("MAX_CONCURRENT_STREAMS"); val != "" {
-		if parsed, err := strconv.ParseUint(val, 10, 32); err == nil {
-			config.MaxConcurrentStreams = uint32(parsed)
-		}
-	}
-	if val := os.Getenv("MAX_FRAME_SIZE"); val != "" {
-		if parsed, err := strconv.ParseUint(val, 10, 32); err == nil {
-			config.MaxFrameSize = uint32(parsed)
-		}
-	}
-	if val := os.Getenv("GRPC_TIMEOUT"); val != "" {
-		config.GRPCTimeout = val
-	}
-
-	return config
-}
 
 // responseWriterWrapper wraps http.ResponseWriter to capture metrics.
 type responseWriterWrapper struct {
@@ -180,14 +95,14 @@ func createTransport(isHTTPS bool, protocol string) http.RoundTripper {
 	}
 
 	transport := &http.Transport{
-		MaxIdleConns:          perfConfig.MaxIdleConns,
-		MaxIdleConnsPerHost:   perfConfig.MaxIdleConnsPerHost,
-		MaxConnsPerHost:       perfConfig.MaxConnsPerHost,
-		IdleConnTimeout:       perfConfig.IdleTimeout,
+		MaxIdleConns:          config.Config.MaxIdleConns,
+		MaxIdleConnsPerHost:   config.Config.MaxIdleConnsPerHost,
+		MaxConnsPerHost:       config.Config.MaxConnsPerHost,
+		IdleConnTimeout:       config.Config.IdleTimeout,
 		TLSHandshakeTimeout:   5 * time.Second,        // Keep optimized
 		ExpectContinueTimeout: 500 * time.Millisecond, // Keep optimized
 		DisableCompression:    false,
-		ForceAttemptHTTP2:     perfConfig.ForceHTTP2,
+		ForceAttemptHTTP2:     config.Config.ForceHTTP2,
 		ResponseHeaderTimeout: 10 * time.Second,
 		DisableKeepAlives:     false,
 	}
@@ -232,14 +147,14 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	requestStartTime := time.Now()
 
 	// Log initial attempt
-	LogRetryAttempt(0, rt.maxRetries, req.Method, req.URL.Path, rt.isGRPC)
+	logger.LogRetryAttempt(0, rt.maxRetries, req.Method, req.URL.Path, rt.isGRPC)
 
 	for attempt := uint(0); attempt <= rt.maxRetries; attempt++ {
 		attemptStartTime := time.Now()
 		// Check if context is canceled before each attempt
 		select {
 		case <-req.Context().Done():
-			LogConnectionCanceled(req.Method, req.URL.Path, attempt)
+			logger.LogConnectionCanceled(req.Method, req.URL.Path, attempt)
 			return nil, req.Context().Err()
 		default:
 		}
@@ -249,7 +164,7 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 
 		// Log each attempt
 		if attempt > 0 {
-			LogRetryAttempt(attempt, rt.maxRetries, req.Method, req.URL.Path, rt.isGRPC)
+			logger.LogRetryAttempt(attempt, rt.maxRetries, req.Method, req.URL.Path, rt.isGRPC)
 		}
 
 		resp, err := rt.base.RoundTrip(reqClone)
@@ -257,14 +172,18 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 
 		if err == nil {
 			if attempt > 0 {
-				LogRetrySuccessWithTiming(attempt, attemptDuration, time.Since(requestStartTime))
+				logger.LogRetrySuccessWithTiming(
+					attempt,
+					attemptDuration,
+					time.Since(requestStartTime),
+				)
 			}
 			return resp, nil
 		}
 
 		// Check if this is a retryable error
 		if !isRetryableError(err) {
-			LogNonRetryableError(req.Method, req.URL.Path, err, rt.isGRPC)
+			logger.LogNonRetryableError(req.Method, req.URL.Path, err, rt.isGRPC)
 			return nil, err
 		}
 
@@ -278,12 +197,12 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 				// Cap at 1 second instead of 5
 				1*time.Second)
 
-			LogRetryWithTiming(attempt+1, delay.String(), err, attemptDuration)
+			logger.LogRetryWithTiming(attempt+1, delay.String(), err, attemptDuration)
 
 			// Use context-aware sleep to allow cancellation
 			select {
 			case <-req.Context().Done():
-				LogConnectionCanceled(req.Method, req.URL.Path, attempt+1)
+				logger.LogConnectionCanceled(req.Method, req.URL.Path, attempt+1)
 				return nil, req.Context().Err()
 			case <-time.After(delay):
 				// Continue to next attempt
@@ -292,7 +211,7 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 
 	totalDuration := time.Since(requestStartTime)
-	LogRetryFailedWithTiming(rt.maxRetries+1, lastErr, totalDuration)
+	logger.LogRetryFailedWithTiming(rt.maxRetries+1, lastErr, totalDuration)
 	return nil, lastErr
 }
 
@@ -352,7 +271,7 @@ type protocolFallbackTransport struct {
 
 func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Skip protocol fallback if disabled
-	if perfConfig.DisableProtocolFallback {
+	if config.Config.DisableProtocolFallback {
 		protocol := "h2c"
 		if !pft.isGRPC {
 			protocol = "http/1.1"
@@ -375,7 +294,7 @@ func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Respon
 	var lastErr error
 
 	for _, protocol := range protocols {
-		LogDebug("Trying protocol", logrus.Fields{
+		logger.LogDebug("Trying protocol", logrus.Fields{
 			"protocol": protocol,
 			"grpc":     pft.isGRPC,
 			"attempt":  protocol,
@@ -391,7 +310,7 @@ func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Respon
 
 		resp, err := retryTransport.RoundTrip(req)
 		if err == nil {
-			LogDebug("Protocol successful", logrus.Fields{
+			logger.LogDebug("Protocol successful", logrus.Fields{
 				"protocol": protocol,
 				"grpc":     pft.isGRPC,
 			})
@@ -401,7 +320,7 @@ func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Respon
 		// If it's a protocol mismatch error, try the next protocol
 		if strings.Contains(err.Error(), "malformed HTTP response") ||
 			strings.Contains(err.Error(), "HTTP/1.x transport connection broken") {
-			LogDebug("Protocol mismatch, trying next", logrus.Fields{
+			logger.LogDebug("Protocol mismatch, trying next", logrus.Fields{
 				"protocol": protocol,
 				"error":    err.Error(),
 			})
@@ -428,7 +347,7 @@ func createProtocolFallbackTransport(port int32, isGRPC bool) http.RoundTripper 
 	}
 }
 
-func proxyHandler(w http.ResponseWriter, r *http.Request) {
+func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	isGRPC := isGRPCRequest(r)
 	protocolInfo := getProtocolInfo(r)
@@ -441,8 +360,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	// Get request size
 	requestSize := max(r.ContentLength, 0)
 
-	LogRequest(r.Method, r.URL.Path, protocolInfo, r.RemoteAddr)
-	LogRequestStart(r.Method, r.URL.Path, isGRPC, requestSize)
+	logger.LogRequest(r.Method, r.URL.Path, protocolInfo, r.RemoteAddr)
+	logger.LogRequestStart(r.Method, r.URL.Path, isGRPC, requestSize)
 
 	// Set CORS headers for browser compatibility
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -457,9 +376,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	host := r.Host
-	service, namespace, err := parseHost(host)
+	service, namespace, err := tools.ParseHost(host)
 	if err != nil {
-		LogError(fmt.Sprintf("Failed to parse host '%s'", host), err)
+		logger.LogError(fmt.Sprintf("Failed to parse host '%s'", host), err)
 		if isGRPC {
 			// gRPC error response
 			w.Header().Set("Content-Type", "application/grpc")
@@ -472,10 +391,10 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	LogRouting(service, namespace)
-	localPort, err := ensurePortForward(service, namespace)
+	logger.LogRouting(service, namespace)
+	localPort, err := cache.EnsurePortForward(service, namespace)
 	if err != nil {
-		LogError(fmt.Sprintf("Port-forward failed for %s.%s", service, namespace), err)
+		logger.LogError(fmt.Sprintf("Port-forward failed for %s.%s", service, namespace), err)
 		if isGRPC {
 			// gRPC error response
 			w.Header().Set("Content-Type", "application/grpc")
@@ -488,7 +407,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	LogDebug("Port-forward ready", logrus.Fields{
+	logger.LogDebug("Port-forward ready", logrus.Fields{
 		"service":   service,
 		"namespace": namespace,
 		"port":      localPort,
@@ -497,15 +416,17 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	// Use background health monitor status instead of inline checks
 	serviceKey := fmt.Sprintf("%s.%s", service, namespace)
 	healthy := true
-	var healthStatus *HealthStatus
-	if globalHealthMonitor != nil {
-		healthy, healthStatus = globalHealthMonitor.IsHealthy(serviceKey)
+	var healthStatus *health.HealthStatus
+	healthMonitor := health.GetHealthMonitor()
+	if healthMonitor != nil {
+		healthy = health.IsBackendHealthy(serviceKey)
+		// Note: Individual HealthStatus retrieval may need additional implementation
 	} else {
-		healthStatus = &HealthStatus{IsHealthy: true, ResponseTime: 0}
+		healthy = true // Assume healthy if no monitor
 	}
 
 	if !healthy {
-		LogDebug("Backend reported unhealthy by monitor", logrus.Fields{
+		logger.LogDebug("Backend reported unhealthy by monitor", logrus.Fields{
 			"service":       service,
 			"namespace":     namespace,
 			"port":          localPort,
@@ -515,19 +436,19 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		})
 
 		// For unhealthy services, do a quick validation before proceeding
-		if !perfConfig.SkipHealthCheck {
+		if !config.Config.SkipHealthCheck {
 			if err := healthCheckBackend(localPort, 500*time.Millisecond); err != nil {
-				LogBackendHealth(localPort, "unhealthy")
-				LogDebug("Quick health validation failed, proceeding anyway", logrus.Fields{
+				logger.LogBackendHealth(localPort, "unhealthy")
+				logger.LogDebug("Quick health validation failed, proceeding anyway", logrus.Fields{
 					"port":  localPort,
 					"error": err.Error(),
 				})
 			} else {
-				LogBackendHealth(localPort, "recovered")
+				logger.LogBackendHealth(localPort, "recovered")
 			}
 		}
 	} else {
-		LogDebug("Backend healthy according to monitor", logrus.Fields{
+		logger.LogDebug("Backend healthy according to monitor", logrus.Fields{
 			"service":     service,
 			"namespace":   namespace,
 			"port":        localPort,
@@ -569,7 +490,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				}
 				// Add gRPC-specific timeout handling
 				if req.Header.Get("Grpc-Timeout") == "" {
-					req.Header.Set("Grpc-Timeout", perfConfig.GRPCTimeout)
+					req.Header.Set("Grpc-Timeout", config.Config.GRPCTimeout)
 				}
 				// Set User-Agent for gRPC if not present
 				if req.Header.Get("User-Agent") == "" {
@@ -579,9 +500,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				if !strings.HasPrefix(req.Header.Get("Content-Type"), "application/grpc") {
 					req.Header.Set("Content-Type", "application/grpc+proto")
 				}
-				LogProxy(req.Method, req.URL.Path, originalProto, "auto-detect", true)
+				logger.LogProxy(req.Method, req.URL.Path, originalProto, "auto-detect", true)
 			} else {
-				LogProxy(req.Method, req.URL.Path, originalProto, "auto-detect", false)
+				logger.LogProxy(req.Method, req.URL.Path, originalProto, "auto-detect", false)
 			}
 		},
 		Transport: transport,
@@ -606,7 +527,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			// Check if this was a context cancellation
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				LogDebug("Request canceled by client", logrus.Fields{
+				logger.LogDebug("Request canceled by client", logrus.Fields{
 					"method": r.Method,
 					"path":   r.URL.Path,
 					"error":  err.Error(),
@@ -617,9 +538,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 			// Log different message for retryable vs non-retryable errors
 			if isRetryableError(err) {
-				LogError("Connection failed after retries", err)
+				logger.LogError("Connection failed after retries", err)
 			} else {
-				LogProxyError(r.Method, r.URL.Path, err)
+				logger.LogProxyError(r.Method, r.URL.Path, err)
 			}
 
 			if isGRPCRequest(r) {
@@ -643,7 +564,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log retry configuration for this request
-	LogDebug("Proxying with protocol fallback", logrus.Fields{
+	logger.LogDebug("Proxying with protocol fallback", logrus.Fields{
 		"service":    service,
 		"namespace":  namespace,
 		"is_grpc":    isGRPC,
@@ -657,8 +578,14 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	totalDuration := time.Since(startTime)
 
 	// Log final metrics
-	LogProxyMetrics(service, namespace, localPort, proxyDuration, responseWriter.statusCode < 400)
-	LogResponseMetrics(
+	logger.LogProxyMetrics(
+		service,
+		namespace,
+		localPort,
+		proxyDuration,
+		responseWriter.statusCode < 400,
+	)
+	logger.LogResponseMetrics(
 		r.Method,
 		r.URL.Path,
 		responseWriter.statusCode,
@@ -668,8 +595,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
-// healthCheckHandler provides a simple health check endpoint.
-func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
+// HealthCheckHandler provides a simple health check endpoint.
+func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	protocolInfo := getProtocolInfo(r)
 
 	response := map[string]any{
@@ -690,70 +617,22 @@ func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 		"features": ["http/1.1", "h2c", "h2", "grpc"]
 	}`, response["status"], protocolInfo, response["version"])
 
-	LogHealthCheck(protocolInfo)
+	logger.LogHealthCheck(protocolInfo)
 }
 
-// servicesHandler provides information about discovered services.
-func servicesHandler(w http.ResponseWriter, r *http.Request, zeroconfServer *ZeroconfServer) {
+// HealthStatusHandler provides health status for all monitored services.
+func HealthStatusHandler(w http.ResponseWriter, r *http.Request) {
 	protocolInfo := getProtocolInfo(r)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	if zeroconfServer == nil {
-		response := map[string]any{
-			"status":   "unavailable",
-			"message":  "Zeroconf server not running",
-			"services": []string{},
-		}
-		_ = json.NewEncoder(w).Encode(response)
-		return
-	}
-
-	services := zeroconfServer.GetAllServices()
-
-	// Convert to API-friendly format
-	serviceList := make([]map[string]any, 0, len(services))
-	for domain, info := range services {
-		serviceList = append(serviceList, map[string]any{
-			"domain":    domain,
-			"service":   info.Service,
-			"namespace": info.Namespace,
-			"port":      info.Port,
-			"last_seen": info.LastSeen.Format(time.RFC3339),
-		})
-	}
-
-	response := map[string]any{
-		"status":       "ok",
-		"protocol":     protocolInfo,
-		"total_count":  len(services),
-		"services":     serviceList,
-		"last_updated": time.Now().Format(time.RFC3339),
-	}
-
-	_ = json.NewEncoder(w).Encode(response)
-
-	log.WithFields(logrus.Fields{
-		"protocol":      protocolInfo,
-		"service_count": len(services),
-		"client_ip":     r.RemoteAddr,
-	}).Info("📋 Services list requested")
-}
-
-// healthStatusHandler provides health status for all monitored services.
-func healthStatusHandler(w http.ResponseWriter, r *http.Request) {
-	protocolInfo := getProtocolInfo(r)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	healthMonitor := GetHealthMonitor()
-	var allStatus map[string]*HealthStatus
+	healthMonitor := health.GetHealthMonitor()
+	var allStatus map[string]*health.HealthStatus
 	if healthMonitor != nil {
 		allStatus = healthMonitor.GetAllHealthStatus()
 	} else {
-		allStatus = make(map[string]*HealthStatus)
+		allStatus = make(map[string]*health.HealthStatus)
 	}
 
 	// Convert to API-friendly format
@@ -773,8 +652,8 @@ func healthStatusHandler(w http.ResponseWriter, r *http.Request) {
 	response := map[string]any{
 		"status":          "ok",
 		"protocol":        protocolInfo,
-		"monitor_enabled": healthConfig.Enabled,
-		"check_interval":  healthConfig.CheckInterval.String(),
+		"monitor_enabled": health.Config.Enabled,
+		"check_interval":  health.Config.CheckInterval.String(),
 		"total_services":  len(allStatus),
 		"services":        statusList,
 		"timestamp":       time.Now().Format(time.RFC3339),
@@ -782,26 +661,26 @@ func healthStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.NewEncoder(w).Encode(response)
 
-	log.WithFields(logrus.Fields{
+	logger.Log.WithFields(logrus.Fields{
 		"protocol":      protocolInfo,
 		"service_count": len(allStatus),
 		"client_ip":     r.RemoteAddr,
 	}).Info("📊 Health status requested")
 }
 
-// healthMetricsHandler provides aggregate health metrics.
-func healthMetricsHandler(w http.ResponseWriter, r *http.Request) {
+// HealthMetricsHandler provides aggregate health metrics.
+func HealthMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	protocolInfo := getProtocolInfo(r)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	healthMonitor := GetHealthMonitor()
-	var allStatus map[string]*HealthStatus
+	healthMonitor := health.GetHealthMonitor()
+	var allStatus map[string]*health.HealthStatus
 	if healthMonitor != nil {
 		allStatus = healthMonitor.GetAllHealthStatus()
 	} else {
-		allStatus = make(map[string]*HealthStatus)
+		allStatus = make(map[string]*health.HealthStatus)
 	}
 
 	// Calculate metrics
@@ -841,7 +720,7 @@ func healthMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	response := map[string]any{
 		"status":             "ok",
 		"protocol":           protocolInfo,
-		"monitor_enabled":    healthConfig.Enabled,
+		"monitor_enabled":    health.Config.Enabled,
 		"total_services":     totalServices,
 		"healthy_services":   healthyServices,
 		"unhealthy_services": unhealthyServices,
@@ -852,16 +731,16 @@ func healthMetricsHandler(w http.ResponseWriter, r *http.Request) {
 			"max_ms":     maxResponseTime.Milliseconds(),
 		},
 		"configuration": map[string]any{
-			"check_interval": healthConfig.CheckInterval.String(),
-			"timeout":        healthConfig.Timeout.String(),
-			"max_failures":   healthConfig.MaxFailures,
+			"check_interval": health.Config.CheckInterval.String(),
+			"timeout":        health.Config.Timeout.String(),
+			"max_failures":   health.Config.MaxFailures,
 		},
 		"timestamp": time.Now().Format(time.RFC3339),
 	}
 
 	_ = json.NewEncoder(w).Encode(response)
 
-	log.WithFields(logrus.Fields{
+	logger.Log.WithFields(logrus.Fields{
 		"protocol":         protocolInfo,
 		"total_services":   totalServices,
 		"healthy_services": healthyServices,

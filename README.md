@@ -18,6 +18,7 @@
 - 🔄 **Smart Retry Logic** - Exponential backoff with configurable policies
 - 🖥️ **Cross-Platform** - macOS, Linux, and Windows support
 - ☁️ **Cloud Native** - Works in-cluster and locally with kubeconfig
+- 🔧 **Developer Friendly** - Enhanced logging and clear error messages
 
 ## 🚀 Quick Start
 
@@ -65,12 +66,12 @@ graph LR
 
 All protocols work on **port 80** with automatic detection:
 
-| Protocol | Example | Use Case |
-|----------|---------|----------|
-| **HTTP/1.1** | `curl http://api.default.svc.cluster.local/` | Legacy apps, simple requests |
-| **HTTP/2** | `curl --http2-prior-knowledge http://api.default.svc.cluster.local/` | Modern apps, multiplexing |
-| **gRPC** | `grpcurl api.default.svc.cluster.local:80 list` | Microservices, streaming |
-| **HTTPS** | `curl -k https://api.default.svc.cluster.local/` | Secure connections |
+| Protocol     | Example                                                              | Use Case                     |
+| ------------ | -------------------------------------------------------------------- | ---------------------------- |
+| **HTTP/1.1** | `curl http://api.default.svc.cluster.local/`                         | Legacy apps, simple requests |
+| **HTTP/2**   | `curl --http2-prior-knowledge http://api.default.svc.cluster.local/` | Modern apps, multiplexing    |
+| **gRPC**     | `grpcurl api.default.svc.cluster.local:80 list`                      | Microservices, streaming     |
+| **HTTPS**    | `curl -k https://api.default.svc.cluster.local/`                     | Secure connections           |
 
 ## ⚙️ Configuration
 
@@ -91,6 +92,7 @@ Options:
 ### Environment Variables
 
 #### Performance Tuning
+
 ```bash
 # Health monitoring
 export HEALTH_MONITOR_ENABLED=true
@@ -108,6 +110,7 @@ export PROXY_RETRY_DELAY_MS=100
 ```
 
 #### Quick Performance Modes
+
 ```bash
 # Speed mode (development)
 export SKIP_HEALTH_CHECK=true
@@ -163,25 +166,34 @@ curl http://localhost:80/services | jq
 
 ### Automatic Setup
 
-kube-tunnel automatically configures DNS resolution:
+kube-tunnel automatically configures DNS resolution with improved error handling and clearer feedback:
 
-| Platform | Method | Status |
-|----------|--------|--------|
-| **macOS** | `/etc/resolver/cluster.local` | ✅ Automatic |
-| **Linux** | `/etc/hosts` entries | ✅ Automatic |
-| **Windows** | Manual configuration | ⚠️ Manual |
+| Platform    | Method                        | Status       |
+| ----------- | ----------------------------- | ------------ |
+| **macOS**   | `/etc/resolver/cluster.local` | ✅ Automatic |
+| **Linux**   | systemd-resolved integration  | ✅ Automatic |
+| **Windows** | Manual configuration          | ⚠️ Manual    |
+
+### Enhanced DNS Features
+
+- **Structured Logging**: All DNS operations are logged with clear, detailed messages
+- **Better Error Messages**: English error descriptions with context for troubleshooting
+- **Automatic Interface Detection**: Smart detection of active network interfaces
+- **Graceful Cleanup**: Automatic DNS configuration cleanup on exit
 
 ### Manual Configuration
 
 If automatic setup fails:
 
 **macOS:**
+
 ```bash
 sudo mkdir -p /etc/resolver
 echo -e "nameserver 127.0.0.1\nport 5353" | sudo tee /etc/resolver/cluster.local
 ```
 
 **Linux:**
+
 ```bash
 echo "127.0.0.1 *.svc.cluster.local" | sudo tee -a /etc/hosts
 ```
@@ -222,20 +234,20 @@ spec:
     spec:
       serviceAccountName: kube-tunnel
       containers:
-      - name: kube-tunnel
-        image: kube-tunnel:latest
-        ports:
-        - containerPort: 80
-        env:
-        - name: HEALTH_MONITOR_ENABLED
-          value: "true"
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
+        - name: kube-tunnel
+          image: kube-tunnel:latest
+          ports:
+            - containerPort: 80
+          env:
+            - name: HEALTH_MONITOR_ENABLED
+              value: "true"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -247,9 +259,9 @@ kind: ClusterRole
 metadata:
   name: kube-tunnel
 rules:
-- apiGroups: [""]
-  resources: ["services", "pods", "pods/portforward"]
-  verbs: ["get", "list", "create"]
+  - apiGroups: [""]
+    resources: ["services", "pods", "pods/portforward"]
+    verbs: ["get", "list", "create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -260,9 +272,9 @@ roleRef:
   kind: ClusterRole
   name: kube-tunnel
 subjects:
-- kind: ServiceAccount
-  name: kube-tunnel
-  namespace: default
+  - kind: ServiceAccount
+    name: kube-tunnel
+    namespace: default
 ```
 
 ## 🧪 Testing & Performance
@@ -292,12 +304,12 @@ ghz --insecure -n 1000 -c 10 api.default.svc.cluster.local:80
 
 ### Expected Performance
 
-| Metric | Target | Optimized |
-|--------|--------|-----------|
-| Cold start latency | <500ms | <200ms |
-| Warm request latency | <25ms | <10ms |
-| Throughput | >200 req/s | >1000 req/s |
-| Health API latency | <50ms | <10ms |
+| Metric               | Target     | Optimized   |
+| -------------------- | ---------- | ----------- |
+| Cold start latency   | <500ms     | <200ms      |
+| Warm request latency | <25ms      | <10ms       |
+| Throughput           | >200 req/s | >1000 req/s |
+| Health API latency   | <50ms      | <10ms       |
 
 ## 🔧 Troubleshooting
 
@@ -316,6 +328,7 @@ curl -H "Host: service.namespace.svc.cluster.local" http://localhost:80/
 # Check mDNS
 dig @127.0.0.1 -p 5353 service.namespace.svc.cluster.local
 ```
+
 </details>
 
 <details>
@@ -332,6 +345,7 @@ kubectl auth can-i create pods/portforward
 # Enable debug logging
 LOG_LEVEL=debug ./kube-tunnel
 ```
+
 </details>
 
 <details>
@@ -349,17 +363,36 @@ curl http://localhost:80/health/metrics
 # Run performance test
 ./scripts/perf-test.sh
 ```
+
 </details>
 
 ### Debug Mode
 
 ```bash
-# Enable debug logging
+# Enable debug logging for detailed DNS operations
 export LOG_LEVEL=debug
 ./kube-tunnel
 
 # Monitor health in real-time
 watch 'curl -s http://localhost:80/health/metrics | jq ".total_services, .healthy_services"'
+
+# Check DNS configuration logs
+./kube-tunnel -dns-only
+```
+
+### DNS Troubleshooting
+
+With the improved DNS resolver, you'll get clearer error messages:
+
+```bash
+# Check DNS setup with enhanced logging
+./kube-tunnel -dns-only
+
+# Verify DNS resolution manually
+dig @127.0.0.1 -p 5353 service.namespace.svc.cluster.local
+
+# Monitor DNS operations in real-time
+LOG_LEVEL=debug ./kube-tunnel 2>&1 | grep -i dns
 ```
 
 ## 🤝 Contributing

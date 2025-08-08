@@ -267,7 +267,6 @@ snapcrafts:
       - Automatic port-forwarding with intelligent caching
       - Background health monitoring
       - Cross-platform support
-      - Built-in mDNS server for seamless service discovery
     grade: stable
     confinement: strict
     license: MIT

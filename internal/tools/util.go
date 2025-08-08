@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"fmt"
@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func parseHost(host string) (string, string, error) {
+func ParseHost(host string) (string, string, error) {
 	parts := strings.Split(host, ".")
 	if len(parts) < 5 || parts[2] != "svc" {
 		return "", "", fmt.Errorf("invalid host: %s", host)
@@ -15,7 +15,7 @@ func parseHost(host string) (string, string, error) {
 	return parts[0], parts[1], nil
 }
 
-func getFreePort() (int32, error) {
+func GetFreePort() (int32, error) {
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
 		return 0, fmt.Errorf("failed to get free port: %w", err)
