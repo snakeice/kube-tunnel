@@ -275,37 +275,6 @@ snapcrafts:
         command: kube-tunnel
         plugs: ["home", "network", "network-bind"]
 
-wingets:
-  - name: kube-tunnel
-    publisher: snakeice
-    license: MIT
-    publisher_url: "https://github.com/snakeice/kube-tunnel"
-    publisher_support_url: "https://github.com/snakeice/kube-tunnel/issues"
-    package_identifier: "snakeice.kube-tunnel"
-    description: "High-performance Kubernetes service proxy with intelligent protocol detection"
-    homepage: "https://github.com/snakeice/kube-tunnel"
-    license_url: "https://github.com/snakeice/kube-tunnel/blob/main/LICENSE"
-    copyright: "Copyright (c) snakeice"
-    short_description: "Kubernetes service proxy with DNS-style routing"
-    tags:
-      - kubernetes
-      - proxy
-      - grpc
-      - http2
-      - service-discovery
-    repository:
-      owner: snakeice
-      name: winget-pkgs
-      branch: "kube-tunnel-{{.Version}}"
-      token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
-      pull_request:
-        enabled: true
-        draft: false
-        base:
-          owner: microsoft
-          name: winget-pkgs
-          branch: master
-
 sboms:
   - artifacts: archive
   - id: source

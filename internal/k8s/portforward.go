@@ -20,7 +20,7 @@ func StartPortForward(
 	ctx context.Context,
 	config *rest.Config,
 	namespace, pod string,
-	localPort, remotePort int32,
+	localPort, remotePort int,
 ) error {
 	transport, upgrader, err := spdy.RoundTripperFor(config)
 	if err != nil {

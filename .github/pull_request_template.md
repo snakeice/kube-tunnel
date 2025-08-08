@@ -4,7 +4,7 @@
 
 Provide a brief description of the changes in this PR.
 
-<!-- 
+<!--
 Please include:
 - What this PR does
 - Why these changes are needed
@@ -27,7 +27,7 @@ Please delete options that are not relevant:
 
 ## Related Issues
 
-<!-- 
+<!--
 Link to related issues using:
 - Fixes #123
 - Closes #456
@@ -38,27 +38,30 @@ Link to related issues using:
 
 <!-- Provide a detailed list of changes -->
 
-- 
-- 
-- 
+-
+-
+-
 
 ## Testing
 
 <!-- Describe the tests you ran to verify your changes -->
 
 ### Test Environment
+
 - [ ] Local development
 - [ ] Docker container
 - [ ] Kubernetes cluster
 - [ ] CI/CD pipeline
 
 ### Test Cases
+
 - [ ] Unit tests pass
 - [ ] Integration tests pass
 - [ ] Performance tests (if applicable)
 - [ ] Security tests (if applicable)
 
 ### Manual Testing
+
 <!-- Describe any manual testing performed -->
 
 ```bash
@@ -77,14 +80,15 @@ curl http://test-service.default.svc.cluster.local:8080/health
 - [ ] Performance impact unknown
 
 ### Benchmarks
+
 <!-- If applicable, provide before/after performance metrics -->
 
-| Metric | Before | After | Change |
-|--------|--------|-------|--------|
-| Cold start latency | | | |
-| Warm request latency | | | |
-| Throughput | | | |
-| Memory usage | | | |
+| Metric               | Before | After | Change |
+| -------------------- | ------ | ----- | ------ |
+| Cold start latency   |        |       |        |
+| Warm request latency |        |       |        |
+| Throughput           |        |       |        |
+| Memory usage         |        |       |        |
 
 ## Security Considerations
 
@@ -113,6 +117,7 @@ curl http://test-service.default.svc.cluster.local:8080/health
 ## Checklist
 
 ### Code Quality
+
 - [ ] My code follows the project's style guidelines
 - [ ] I have performed a self-review of my own code
 - [ ] I have commented my code, particularly in hard-to-understand areas
@@ -121,17 +126,20 @@ curl http://test-service.default.svc.cluster.local:8080/health
 - [ ] I have removed any debugging code or console logs
 
 ### Testing
+
 - [ ] I have added tests that prove my fix is effective or that my feature works
 - [ ] New and existing unit tests pass locally with my changes
 - [ ] I have tested the changes with different Kubernetes versions (if applicable)
 - [ ] I have tested cross-platform compatibility (if applicable)
 
 ### Dependencies
+
 - [ ] I have updated go.mod/go.sum if dependencies changed
 - [ ] Any new dependencies are properly justified
 - [ ] I have checked for security vulnerabilities in new dependencies
 
 ### Release Notes
+
 - [ ] This change should be mentioned in release notes
 - [ ] This change should be mentioned in upgrade guide
 - [ ] This change requires communication to users
@@ -153,6 +161,7 @@ curl http://test-service.default.svc.cluster.local:8080/health
 <!-- For reviewers: what should they focus on? -->
 
 ### Focus Areas
+
 - [ ] Code logic and correctness
 - [ ] Performance implications
 - [ ] Security considerations
@@ -162,15 +171,17 @@ curl http://test-service.default.svc.cluster.local:8080/health
 - [ ] Documentation completeness
 
 ### Testing Instructions
+
 <!-- Specific instructions for reviewers to test the changes -->
 
-1. 
-2. 
-3. 
+1.
+2.
+3.
 
 ---
 
 **Deployment Checklist** (for maintainers):
+
 - [ ] Version bump required
 - [ ] Changelog updated
 - [ ] Migration guide updated (if breaking changes)

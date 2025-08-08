@@ -21,3 +21,4 @@ tmp/
 *.key
 server.crt
 server.key
+dist/

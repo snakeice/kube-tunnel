@@ -145,6 +145,7 @@ linters:
       disable-default-exclusions: true
       exclude-functions:
         - "file.Close"
+        - "fmt.Fprintf"
 
     revive:
       rules:
@@ -383,6 +384,20 @@ linters:
         linters: [godot]
       - source: "//noinspection"
         linters: [gocritic]
+      - source: "cache.*= map.*PortForwardSession"
+        linters: [gochecknoglobals]
+      - source: "cacheLock.*= sync.Mutex"
+        linters: [gochecknoglobals]
+      - source: "configuredInterface.*string"
+        linters: [gochecknoglobals]
+      - source: "globalHealthMonitor.*Monitor"
+        linters: [gochecknoglobals]
+      - source: "Config.*= LoadConfig"
+        linters: [gochecknoglobals]
+      - source: "Log.*logrus.Logger"
+        linters: [gochecknoglobals]
+      - source: "once.*sync.Once"
+        linters: [gochecknoglobals]
       - path: "_test\\.go"
         linters:
           - bodyclose

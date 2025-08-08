@@ -39,16 +39,19 @@ func SetupDNS(domain string, port int) error {
 	cmds := [][]string{
 		{"sudo", "-v"},
 		{"sudo", "resolvectl", "dns", iface, fmt.Sprintf("127.0.0.1:%d", port)},
-		{"sudo", "resolvectl", "domain", iface, fmt.Sprintf("~%s", domain)},
+		{"sudo", "resolvectl", "domain", iface, "~" + domain},
 	}
 
 	for _, cmd := range cmds {
 		logger.Log.Infof("Executing: %s", strings.Join(cmd, " "))
+		// Ensure error handling for exec.Command
+		//nolint:gosec // Commands are controlled and safe
 		out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
 		if err != nil {
-			logger.Log.Errorf("Error: %v\nOutput: %s", err, out)
-			return fmt.Errorf("failed to apply resolvectl: %w", err)
+			return fmt.Errorf("command failed: %w", err)
 		}
+		// Ensure subprocess output is logged
+		logger.Log.Infof("Command output: %s", string(out))
 	}
 
 	logger.Log.Infof(

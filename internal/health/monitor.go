@@ -5,24 +5,23 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"github.com/snakeice/kube-tunnel/internal/config"
 	"github.com/snakeice/kube-tunnel/internal/logger"
 )
 
-// HealthStatus represents the health state of a backend service.
-type HealthStatus struct {
+// Status represents the health state of a backend service.
+type Status struct {
 	IsHealthy    bool
 	LastChecked  time.Time
 	LastHealthy  time.Time
 	FailureCount int
 	ResponseTime time.Duration
 	ErrorMessage string
-	Port         int32
+	Port         int
 }
 
 // HealthMonitor manages background health checks for all active services.
@@ -40,8 +39,8 @@ func StopHealthMonitor() {
 	}
 }
 
-type HealthMonitor struct {
-	healthCache   map[string]*HealthStatus
+type Monitor struct {
+	healthCache   map[string]*Status
 	cacheLock     sync.RWMutex
 	checkInterval time.Duration
 	timeout       time.Duration
@@ -51,63 +50,13 @@ type HealthMonitor struct {
 	wg            sync.WaitGroup
 }
 
-// HealthConfig holds configuration for health monitoring.
-type HealthConfig struct {
-	Enabled         bool
-	CheckInterval   time.Duration
-	Timeout         time.Duration
-	MaxFailures     int
-	RecoveryRetries int
-}
-
 var (
-	globalHealthMonitor *HealthMonitor
-	Config              = LoadConfig()
+	globalHealthMonitor *Monitor
 )
 
-func LoadConfig() HealthConfig {
-	config := HealthConfig{
-		Enabled:         true,
-		CheckInterval:   30 * time.Second,
-		Timeout:         2 * time.Second,
-		MaxFailures:     3,
-		RecoveryRetries: 2,
-	}
-
-	if os.Getenv("HEALTH_MONITOR_ENABLED") == "false" {
-		config.Enabled = false
-	}
-
-	if val := os.Getenv("HEALTH_CHECK_INTERVAL"); val != "" {
-		if parsed, err := time.ParseDuration(val); err == nil {
-			config.CheckInterval = parsed
-		}
-	}
-
-	if val := os.Getenv("HEALTH_CHECK_TIMEOUT"); val != "" {
-		if parsed, err := time.ParseDuration(val); err == nil {
-			config.Timeout = parsed
-		}
-	}
-
-	if val := os.Getenv("HEALTH_MAX_FAILURES"); val != "" {
-		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
-			config.MaxFailures = parsed
-		}
-	}
-
-	if val := os.Getenv("HEALTH_RECOVERY_RETRIES"); val != "" {
-		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
-			config.RecoveryRetries = parsed
-		}
-	}
-
-	return config
-}
-
-func NewHealthMonitor(config HealthConfig) *HealthMonitor {
-	return &HealthMonitor{
-		healthCache:   make(map[string]*HealthStatus),
+func NewHealthMonitor(config config.HealthConfig) *Monitor {
+	return &Monitor{
+		healthCache:   make(map[string]*Status),
 		checkInterval: config.CheckInterval,
 		timeout:       config.Timeout,
 		maxFailures:   config.MaxFailures,
@@ -116,7 +65,7 @@ func NewHealthMonitor(config HealthConfig) *HealthMonitor {
 	}
 }
 
-func (hm *HealthMonitor) Start() {
+func (hm *Monitor) Start() {
 	if !hm.enabled {
 		return
 	}
@@ -131,7 +80,7 @@ func (hm *HealthMonitor) Start() {
 	go hm.monitorLoop()
 }
 
-func (hm *HealthMonitor) Stop() {
+func (hm *Monitor) Stop() {
 	if !hm.enabled {
 		return
 	}
@@ -140,7 +89,7 @@ func (hm *HealthMonitor) Stop() {
 	hm.wg.Wait()
 }
 
-func (hm *HealthMonitor) RegisterService(serviceKey string, port int32) {
+func (hm *Monitor) RegisterService(serviceKey string, port int) {
 	if !hm.enabled {
 		return
 	}
@@ -149,7 +98,7 @@ func (hm *HealthMonitor) RegisterService(serviceKey string, port int32) {
 	defer hm.cacheLock.Unlock()
 
 	if _, exists := hm.healthCache[serviceKey]; !exists {
-		hm.healthCache[serviceKey] = &HealthStatus{
+		hm.healthCache[serviceKey] = &Status{
 			IsHealthy:    true, // Assume healthy initially
 			LastChecked:  time.Now(),
 			LastHealthy:  time.Now(),
@@ -168,7 +117,7 @@ func (hm *HealthMonitor) RegisterService(serviceKey string, port int32) {
 	}
 }
 
-func (hm *HealthMonitor) UnregisterService(serviceKey string) {
+func (hm *Monitor) UnregisterService(serviceKey string) {
 	if !hm.enabled {
 		return
 	}
@@ -184,9 +133,9 @@ func (hm *HealthMonitor) UnregisterService(serviceKey string) {
 	}
 }
 
-func (hm *HealthMonitor) IsHealthy(serviceKey string) (bool, *HealthStatus) {
+func (hm *Monitor) IsHealthy(serviceKey string) *Status {
 	if !hm.enabled {
-		return true, &HealthStatus{IsHealthy: true}
+		return &Status{IsHealthy: true}
 	}
 
 	hm.cacheLock.RLock()
@@ -196,26 +145,33 @@ func (hm *HealthMonitor) IsHealthy(serviceKey string) (bool, *HealthStatus) {
 		// Consider service stale if not checked recently
 		staleDuration := hm.checkInterval * 3
 		if time.Since(status.LastChecked) > staleDuration {
-			return false, status
+			status.IsHealthy = false
+			status.ErrorMessage = "Service health check is stale"
+			logger.LogDebug("Service marked stale due to inactivity", logrus.Fields{
+				"service":        serviceKey,
+				"last_checked":   status.LastChecked,
+				"stale_duration": staleDuration,
+			})
+			status.LastChecked = time.Now() // Update last checked time
 		}
-		return status.IsHealthy, status
+		return status
 	}
 
-	return true, &HealthStatus{IsHealthy: true}
+	return &Status{IsHealthy: false, ErrorMessage: "Service not registered"}
 }
 
-func (hm *HealthMonitor) GetAllHealthStatus() map[string]*HealthStatus {
+func (hm *Monitor) GetAllHealthStatus() map[string]*Status {
 	if !hm.enabled {
-		return make(map[string]*HealthStatus)
+		return make(map[string]*Status)
 	}
 
 	hm.cacheLock.RLock()
 	defer hm.cacheLock.RUnlock()
 
-	result := make(map[string]*HealthStatus)
+	result := make(map[string]*Status)
 	for key, status := range hm.healthCache {
 		// Create a copy to avoid data races
-		result[key] = &HealthStatus{
+		result[key] = &Status{
 			IsHealthy:    status.IsHealthy,
 			LastChecked:  status.LastChecked,
 			LastHealthy:  status.LastHealthy,
@@ -229,7 +185,7 @@ func (hm *HealthMonitor) GetAllHealthStatus() map[string]*HealthStatus {
 }
 
 // monitorLoop runs the main health monitoring loop.
-func (hm *HealthMonitor) monitorLoop() {
+func (hm *Monitor) monitorLoop() {
 	defer hm.wg.Done()
 
 	ticker := time.NewTicker(hm.checkInterval)
@@ -246,9 +202,9 @@ func (hm *HealthMonitor) monitorLoop() {
 }
 
 // performHealthChecks checks health of all registered services.
-func (hm *HealthMonitor) performHealthChecks() {
+func (hm *Monitor) performHealthChecks() {
 	hm.cacheLock.RLock()
-	servicesToCheck := make(map[string]int32)
+	servicesToCheck := make(map[string]int)
 
 	// Get services from our own health cache that are actively monitored
 	for key, health := range hm.healthCache {
@@ -266,7 +222,7 @@ func (hm *HealthMonitor) performHealthChecks() {
 	var wg sync.WaitGroup
 	for serviceKey, port := range servicesToCheck {
 		wg.Add(1)
-		go func(key string, p int32) {
+		go func(key string, p int) {
 			defer wg.Done()
 			hm.checkServiceHealth(key, p)
 		}(serviceKey, port)
@@ -276,7 +232,7 @@ func (hm *HealthMonitor) performHealthChecks() {
 }
 
 // checkServiceHealth performs a health check on a specific service.
-func (hm *HealthMonitor) checkServiceHealth(serviceKey string, port int32) {
+func (hm *Monitor) checkServiceHealth(serviceKey string, port int) {
 	startTime := time.Now()
 
 	// Perform multiple health check types
@@ -288,7 +244,7 @@ func (hm *HealthMonitor) checkServiceHealth(serviceKey string, port int32) {
 
 	status, exists := hm.healthCache[serviceKey]
 	if !exists {
-		status = &HealthStatus{}
+		status = &Status{}
 		hm.healthCache[serviceKey] = status
 	}
 
@@ -296,36 +252,9 @@ func (hm *HealthMonitor) checkServiceHealth(serviceKey string, port int32) {
 	status.ResponseTime = responseTime
 
 	if isHealthy {
-		if !status.IsHealthy {
-			logger.LogDebug("Service recovered", logrus.Fields{
-				"service":     serviceKey,
-				"port":        port,
-				"response_ms": responseTime.Milliseconds(),
-				"was_failing": status.FailureCount,
-			})
-		}
-		status.IsHealthy = true
-		status.LastHealthy = time.Now()
-		status.FailureCount = 0
-		status.ErrorMessage = ""
+		hm.handleHealthyService(status, serviceKey, port, responseTime)
 	} else {
-		status.FailureCount++
-		if err != nil {
-			status.ErrorMessage = err.Error()
-		}
-
-		// Mark as unhealthy after max failures
-		if status.FailureCount >= hm.maxFailures {
-			if status.IsHealthy {
-				logger.LogDebug("Service marked unhealthy", logrus.Fields{
-					"service":       serviceKey,
-					"port":          port,
-					"failure_count": status.FailureCount,
-					"error":         status.ErrorMessage,
-				})
-			}
-			status.IsHealthy = false
-		}
+		hm.handleUnhealthyService(status, serviceKey, port, err)
 	}
 
 	// Log periodic health status for debugging
@@ -341,8 +270,55 @@ func (hm *HealthMonitor) checkServiceHealth(serviceKey string, port int32) {
 	}
 }
 
+// handleHealthyService processes a healthy service check result.
+func (hm *Monitor) handleHealthyService(
+	status *Status,
+	serviceKey string,
+	port int,
+	responseTime time.Duration,
+) {
+	if !status.IsHealthy {
+		logger.LogDebug("Service recovered", logrus.Fields{
+			"service":     serviceKey,
+			"port":        port,
+			"response_ms": responseTime.Milliseconds(),
+			"was_failing": status.FailureCount,
+		})
+	}
+	status.IsHealthy = true
+	status.LastHealthy = time.Now()
+	status.FailureCount = 0
+	status.ErrorMessage = ""
+}
+
+// handleUnhealthyService processes an unhealthy service check result.
+func (hm *Monitor) handleUnhealthyService(
+	status *Status,
+	serviceKey string,
+	port int,
+	err error,
+) {
+	status.FailureCount++
+	if err != nil {
+		status.ErrorMessage = err.Error()
+	}
+
+	// Mark as unhealthy after max failures
+	if status.FailureCount >= hm.maxFailures {
+		if status.IsHealthy {
+			logger.LogDebug("Service marked unhealthy", logrus.Fields{
+				"service":       serviceKey,
+				"port":          port,
+				"failure_count": status.FailureCount,
+				"error":         status.ErrorMessage,
+			})
+		}
+		status.IsHealthy = false
+	}
+}
+
 // performHealthCheck executes the actual health check.
-func (hm *HealthMonitor) performHealthCheck(port int32) (bool, error) {
+func (hm *Monitor) performHealthCheck(port int) (bool, error) {
 	// Try TCP connection first (fastest)
 	if err := hm.checkTCPConnection(port); err != nil {
 		return false, fmt.Errorf("TCP check failed: %w", err)
@@ -356,24 +332,29 @@ func (hm *HealthMonitor) performHealthCheck(port int32) (bool, error) {
 			"error": err.Error(),
 		})
 		// Consider it healthy if TCP works (might be gRPC, database, etc.)
-		return true, nil
+		return true, nil //nolint:nilerr // Ignore HTTP error if TCP succeeded
 	}
 
 	return true, nil
 }
 
 // checkTCPConnection performs a simple TCP connection test.
-func (hm *HealthMonitor) checkTCPConnection(port int32) error {
+func (hm *Monitor) checkTCPConnection(port int) error {
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), hm.timeout)
 	if err != nil {
 		return err
 	}
-	conn.Close()
+
+	// Ensure conn.Close() error is checked
+	if err := conn.Close(); err != nil {
+		logger.LogError("Failed to close connection", err)
+	}
+
 	return nil
 }
 
 // checkHTTPEndpoint performs an HTTP health check.
-func (hm *HealthMonitor) checkHTTPEndpoint(port int32) error {
+func (hm *Monitor) checkHTTPEndpoint(port int) error {
 	client := &http.Client{
 		Timeout: hm.timeout,
 		Transport: &http.Transport{
@@ -392,7 +373,10 @@ func (hm *HealthMonitor) checkHTTPEndpoint(port int32) error {
 		if err != nil {
 			continue // Try next endpoint
 		}
-		resp.Body.Close()
+		// Ensure resp.Body.Close() error is checked
+		if err := resp.Body.Close(); err != nil {
+			logger.LogError("Failed to close response body", err)
+		}
 
 		// Accept any HTTP response as healthy (even 404)
 		if resp.StatusCode < 500 {
@@ -404,28 +388,25 @@ func (hm *HealthMonitor) checkHTTPEndpoint(port int32) error {
 }
 
 // GetHealthMonitor returns the global health monitor instance.
-func GetHealthMonitor() *HealthMonitor {
-	if globalHealthMonitor == nil {
-		globalHealthMonitor = NewHealthMonitor(Config)
-	}
+func GetHealthMonitor() *Monitor {
 	return globalHealthMonitor
 }
 
 // InitializeHealthMonitor initializes and starts the global health monitor.
-func InitializeHealthMonitor() {
+func InitializeHealthMonitor(cfg config.Config) {
 	if globalHealthMonitor == nil {
-		globalHealthMonitor = NewHealthMonitor(Config)
+		globalHealthMonitor = NewHealthMonitor(cfg.Health)
 		logger.LogDebug("Health monitor initialized", logrus.Fields{
-			"enabled":      Config.Enabled,
-			"interval":     Config.CheckInterval,
-			"timeout":      Config.Timeout,
-			"max_failures": Config.MaxFailures,
+			"enabled":      cfg.Health.Enabled,
+			"interval":     cfg.Health.CheckInterval,
+			"timeout":      cfg.Health.Timeout,
+			"max_failures": cfg.Health.MaxFailures,
 		})
 	}
-	if Config.Enabled && globalHealthMonitor != nil {
+	if cfg.Health.Enabled && globalHealthMonitor != nil {
 		globalHealthMonitor.Start()
 		logger.LogDebug("Health monitor started successfully", logrus.Fields{})
-	} else if !Config.Enabled {
+	} else if !cfg.Health.Enabled {
 		logger.LogDebug("Health monitor disabled by configuration", logrus.Fields{})
 	}
 }
@@ -435,12 +416,12 @@ func IsBackendHealthy(serviceKey string) bool {
 	if globalHealthMonitor == nil {
 		return true // Assume healthy if monitor not initialized
 	}
-	healthy, _ := globalHealthMonitor.IsHealthy(serviceKey)
-	return healthy
+	status := globalHealthMonitor.IsHealthy(serviceKey)
+	return status.IsHealthy
 }
 
 // registerServiceForMonitoring registers a service when port-forward is created.
-func RegisterServiceForMonitoring(serviceKey string, port int32) {
+func RegisterServiceForMonitoring(serviceKey string, port int) {
 	if globalHealthMonitor != nil {
 		globalHealthMonitor.RegisterService(serviceKey, port)
 	}

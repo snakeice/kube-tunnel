@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,79 +20,61 @@ import (
 )
 
 func main() {
-	// Parse command-line flags
 	var (
 		port = flag.Int("port", 80, "Port to run the proxy server on")
 		help = flag.Bool("help", false, "Show help message")
 	)
 	flag.Parse()
-
+	logger.Setup()
 	if *help {
 		flag.Usage()
 		printUsageExamples()
 		return
 	}
-
 	logger.LogStartup("Starting kube-tunnel proxy server on port " + strconv.Itoa(*port))
-
-	// Initialize health monitor after logger is set up
-	health.InitializeHealthMonitor()
-
-	// Set up signal handling for graceful shutdown
+	conf := config.GetConfig()
+	health.InitializeHealthMonitor(conf)
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Create the main handler
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", proxy.ProxyHandler)
+	mux.HandleFunc("/", proxy.Handler)
 	mux.HandleFunc("/health", proxy.HealthCheckHandler)
 	mux.HandleFunc("/health/status", proxy.HealthStatusHandler)
 	mux.HandleFunc("/health/metrics", proxy.HealthMetricsHandler)
 
-	// Create HTTP/2 server with h2c support
 	h2s := &http2.Server{
-		MaxConcurrentStreams:         config.Config.MaxConcurrentStreams,
-		MaxReadFrameSize:             config.Config.MaxFrameSize,
+		MaxConcurrentStreams:         conf.Performance.MaxConcurrentStreams,
+		MaxReadFrameSize:             conf.Performance.MaxFrameSize,
 		PermitProhibitedCipherSuites: false,
-		IdleTimeout:                  config.Config.IdleTimeout,
-		MaxUploadBufferPerConnection: int32(config.Config.MaxFrameSize),
-		MaxUploadBufferPerStream:     int32(config.Config.MaxFrameSize),
+		IdleTimeout:                  conf.Performance.IdleTimeout,
+		MaxUploadBufferPerConnection: conf.Performance.MaxUploadBufferPerConnection,
+		MaxUploadBufferPerStream:     conf.Performance.MaxUploadBufferPerStream,
 	}
 	handler := h2c.NewHandler(mux, h2s)
-
 	server := &http.Server{
 		Addr:         ":" + strconv.Itoa(*port),
 		Handler:      handler,
-		ReadTimeout:  config.Config.ReadTimeout,
-		WriteTimeout: config.Config.WriteTimeout,
-		IdleTimeout:  config.Config.IdleTimeout,
+		ReadTimeout:  conf.Performance.ReadTimeout,
+		WriteTimeout: conf.Performance.WriteTimeout,
+		IdleTimeout:  conf.Performance.IdleTimeout,
 	}
-
-	// Enable HTTP/2
 	if err := http2.ConfigureServer(server, h2s); err != nil {
 		logger.LogError("Failed to configure HTTP/2 server", err)
 		os.Exit(1)
 	}
-
 	dnsServer := dns.NewProxyDNS()
 	if err := dnsServer.Start(); err != nil {
 		logger.LogError("Failed to start DNS server", err)
 		os.Exit(1)
 	}
-
-	// Start server in a goroutine
 	go func() {
-		logger.Log.Info(
-			fmt.Sprintf(
-				"💡 Test: curl http://my-service.default.svc.cluster.local:%d/health",
-				*port,
-			),
-		)
-		logger.Log.Info(
-			fmt.Sprintf("📊 Health monitoring: http://localhost:%d/health/status", *port),
-		)
-		logger.Log.Info(fmt.Sprintf("📈 Health metrics: http://localhost:%d/health/metrics", *port))
+		url := "http://localhost:" + strconv.Itoa(*port)
+		logger.Log.Infof("🌐 Proxy server running at %s", url)
 
+		logger.Log.Infof(
+			"💡 Test: curl http://my-service.default.svc.cluster.local:%d/health", *port)
+		logger.Log.Infof("📊 Health monitoring: %s/health/status", url)
+		logger.Log.Infof("📈 Health metrics: %s/health/metrics", url)
 		logger.Log.Infof("🚀 Server listening on port %d (HTTP/1.1, h2c, h2 with TLS, gRPC)", *port)
 		logger.Log.Info("✅ Ready to proxy requests to *.svc.cluster.local services")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -101,23 +82,16 @@ func main() {
 			os.Exit(1)
 		}
 	}()
-
-	// Wait for shutdown signal
 	<-sigChan
 	logger.Log.Info("🛑 Received shutdown signal, gracefully shutting down...")
-
-	// Graceful shutdown with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-
 	if err := server.Shutdown(ctx); err != nil {
 		logger.LogError("Server forced to shutdown", err)
 	}
-
 	if err := dnsServer.Stop(); err != nil {
 		logger.LogError("Failed to stop DNS server", err)
 	}
-
 	logger.Log.Info("✅ Server stopped gracefully")
 }
 
@@ -138,5 +112,5 @@ After starting, you can make requests like:
   curl http://my-service.default.svc.cluster.local/health
   curl --http2-prior-knowledge http://grpc-service.default.svc.cluster.local/api
 `
-	fmt.Print(examples)
+	logger.Log.Info(examples)
 }

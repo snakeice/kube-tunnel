@@ -18,68 +18,140 @@ import (
 
 const idleTimeout = 5 * time.Minute
 
+type (
+	Cache interface {
+		EnsurePortForward(service, namespace string) (int, error)
+	}
+
+	cacheImpl struct {
+		sync.RWMutex
+		sessions map[string]*PortForwardSession
+	}
+)
+
 type PortForwardSession struct {
-	LocalPort int32
+	LocalPort int
 	Cancel    context.CancelFunc
 	LastUsed  time.Time
 }
 
-var (
-	cache     = map[string]*PortForwardSession{}
-	cacheLock = sync.Mutex{}
-)
+func NewCache() Cache {
+	return &cacheImpl{
+		sessions: make(map[string]*PortForwardSession),
+	}
+}
 
-func EnsurePortForward(service, namespace string) (int32, error) {
+func (c *cacheImpl) EnsurePortForward(service, namespace string) (int, error) {
 	startTime := time.Now()
 	key := fmt.Sprintf("%s.%s", service, namespace)
 
-	cacheLock.Lock()
-	defer cacheLock.Unlock()
+	c.Lock()
+	defer c.Unlock()
 
-	if pf, ok := cache[key]; ok {
+	if port, ok := c.tryReusePortForward(key, service, namespace); ok {
+		return port, nil
+	}
+
+	localPort, cancel, err := setupPortForward(key, service, namespace, startTime)
+	if err != nil {
+		return 0, err
+	}
+
+	c.sessions[key] = &PortForwardSession{
+		LocalPort: localPort,
+		Cancel:    cancel,
+		LastUsed:  time.Now(),
+	}
+
+	health.RegisterServiceForMonitoring(key, localPort)
+	validatePortForward(localPort)
+	go c.autoExpire(key)
+
+	totalDuration := time.Since(startTime)
+	logger.LogDebug("Port-forward setup completed", logrus.Fields{
+		"service":        service,
+		"namespace":      namespace,
+		"local_port":     localPort,
+		"total_setup_ms": totalDuration.Milliseconds(),
+	})
+
+	return localPort, nil
+}
+
+func (c *cacheImpl) autoExpire(key string) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		c.Lock()
+		session, ok := c.sessions[key]
+		if !ok {
+			c.Unlock()
+			return
+		}
+
+		if time.Since(session.LastUsed) > idleTimeout {
+			logger.LogPortForwardExpire(key)
+			session.Cancel()
+			delete(c.sessions, key)
+			// Unregister from health monitoring
+			health.UnregisterServiceFromMonitoring(key)
+			c.Unlock()
+			return
+		}
+		c.Unlock()
+	}
+}
+
+// tryReusePortForward attempts to reuse an existing port-forward session if healthy.
+func (c *cacheImpl) tryReusePortForward(key, service, namespace string) (int, bool) {
+	if pf, ok := c.sessions[key]; ok {
 		logger.LogPortForwardReuse(service, namespace, pf.LocalPort)
 		pf.LastUsed = time.Now()
 
-		// Check health status from background monitor first
 		if health.IsBackendHealthy(key) {
-			return pf.LocalPort, nil
+			return pf.LocalPort, true
 		}
 
-		// If health monitor reports unhealthy, do quick validation
 		if validateConnection(pf.LocalPort) == nil {
-			// Connection works, might be temporary health issue
-			return pf.LocalPort, nil
+			return pf.LocalPort, true
 		}
 
-		// If validation fails, remove from cache and create new
 		logger.LogDebug("Cached port-forward is dead, removing from cache", logrus.Fields{
 			"service":   service,
 			"namespace": namespace,
 			"port":      pf.LocalPort,
 		})
 		pf.Cancel()
-		delete(cache, key)
+		delete(c.sessions, key)
 		health.UnregisterServiceFromMonitoring(key)
 	}
+	return 0, false
+}
 
+// setupPortForward sets up a new port-forward session and returns the local port and cancel function.
+func setupPortForward(
+	key, service, namespace string,
+	startTime time.Time,
+) (int, context.CancelFunc, error) {
 	localPort, err := tools.GetFreePort()
 	if err != nil {
-		return 0, fmt.Errorf("failed to get free port: %w", err)
+		return 0, nil, fmt.Errorf("failed to get free port: %w", err)
 	}
 
 	config, err := k8s.GetKubeConfig()
 	if err != nil {
-		return 0, fmt.Errorf("failed to get kube config: %w", err)
+		return 0, nil, fmt.Errorf("failed to get kube config: %w", err)
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create Kubernetes client: %w", err)
+		return 0, nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 
 	podName, remotePort, err := k8s.GetPodNameForService(clientset, namespace, service)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get pod for service %s: %w", key, err)
+		return 0, nil, fmt.Errorf("failed to get pod for service %s: %w", key, err)
 	}
 
 	setupDuration := time.Since(startTime)
@@ -108,16 +180,11 @@ func EnsurePortForward(service, namespace string) (int32, error) {
 		}
 	}()
 
-	cache[key] = &PortForwardSession{
-		LocalPort: localPort,
-		Cancel:    cancel,
-		LastUsed:  time.Now(),
-	}
+	return localPort, cancel, nil
+}
 
-	// Register service for health monitoring
-	health.RegisterServiceForMonitoring(key, localPort)
-
-	// Use faster validation with shorter waits
+// validatePortForward validates the port-forward connection with retries.
+func validatePortForward(localPort int) {
 	validationStartTime := time.Now()
 	maxRetries := 10
 	baseDelay := 100 * time.Millisecond
@@ -143,51 +210,17 @@ func EnsurePortForward(service, namespace string) (int32, error) {
 			}).Warn("Port-forward validation failed after retries, proceeding anyway")
 		}
 	}
-
-	go autoExpire(key)
-
-	totalDuration := time.Since(startTime)
-	logger.LogDebug("Port-forward setup completed", logrus.Fields{
-		"service":        service,
-		"namespace":      namespace,
-		"local_port":     localPort,
-		"total_setup_ms": totalDuration.Milliseconds(),
-	})
-
-	return localPort, nil
 }
 
 // validateConnection checks if the port-forward is actually ready.
-func validateConnection(port int32) error {
+func validateConnection(port int) error {
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), 200*time.Millisecond)
 	if err != nil {
 		return err
 	}
-	conn.Close()
-	return nil
-}
-
-func autoExpire(key string) {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		cacheLock.Lock()
-		session, ok := cache[key]
-		if !ok {
-			cacheLock.Unlock()
-			return
-		}
-
-		if time.Since(session.LastUsed) > idleTimeout {
-			logger.LogPortForwardExpire(key)
-			session.Cancel()
-			delete(cache, key)
-			// Unregister from health monitoring
-			health.UnregisterServiceFromMonitoring(key)
-			cacheLock.Unlock()
-			return
-		}
-		cacheLock.Unlock()
+	// Ensure conn.Close() error is checked
+	if err := conn.Close(); err != nil {
+		logger.LogError("Failed to close connection", err)
 	}
+	return nil
 }
