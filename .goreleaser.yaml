@@ -15,7 +15,7 @@ before:
 
 builds:
   - id: kube-tunnel
-    main: .
+    main: ./cmd
     binary: kube-tunnel
     goos:
       - linux
@@ -46,7 +46,7 @@ builds:
 
 archives:
   - id: default
-    builds:
+    ids:
       - kube-tunnel
     name_template: >-
       {{ .ProjectName }}_
@@ -57,7 +57,7 @@ archives:
       {{- if .Arm }}v{{ .Arm }}{{ end }}
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
     files:
       - README.md
       - LICENSE
@@ -100,10 +100,11 @@ changelog:
       order: 999
 
 checksum:
-  name_template: 'checksums.txt'
+  name_template: "checksums.txt"
 
 snapshot:
-  name_template: "{{ incpatch .Version }}-next"
+  # renamed from name_template due to deprecation (see https://goreleaser.com/deprecations/#snapshotname_template)
+  version_template: "{{ incpatch .Version }}-next"
 
 release:
   github:
@@ -189,91 +190,6 @@ docker_manifests:
     image_templates:
       - "ghcr.io/snakeice/kube-tunnel:latest-amd64"
       - "ghcr.io/snakeice/kube-tunnel:latest-arm64"
-
-brews:
-  - repository:
-      owner: snakeice
-      name: homebrew-tap
-      branch: main
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Formula
-    homepage: "https://github.com/snakeice/kube-tunnel"
-    description: "High-performance Kubernetes service proxy with intelligent protocol detection"
-    license: "MIT"
-    test: |
-      system "#{bin}/kube-tunnel -help"
-    install: |
-      bin.install "kube-tunnel"
-      (etc/"kube-tunnel").install Dir["scripts/*"]
-
-scoops:
-  - repository:
-      owner: snakeice
-      name: scoop-bucket
-      branch: main
-      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
-    directory: bucket
-    homepage: "https://github.com/snakeice/kube-tunnel"
-    description: "High-performance Kubernetes service proxy with intelligent protocol detection"
-    license: "MIT"
-
-nfpms:
-  - id: packages
-    package_name: kube-tunnel
-    file_name_template: "{{ .ConventionalFileName }}"
-    vendor: snakeice
-    homepage: "https://github.com/snakeice/kube-tunnel"
-    maintainer: "snakeice <snakeice@users.noreply.github.com>"
-    description: "High-performance Kubernetes service proxy with intelligent protocol detection"
-    license: "MIT"
-    formats:
-      - deb
-      - rpm
-      - apk
-      - archlinux
-    bindir: /usr/bin
-    section: utils
-    contents:
-      - src: ./README.md
-        dst: /usr/share/doc/kube-tunnel/README.md
-      - src: ./LICENSE
-        dst: /usr/share/doc/kube-tunnel/LICENSE
-      - src: ./PERFORMANCE.md
-        dst: /usr/share/doc/kube-tunnel/PERFORMANCE.md
-      - src: ./scripts/perf-test.sh
-        dst: /usr/share/kube-tunnel/scripts/perf-test.sh
-        file_info:
-          mode: 0755
-      - src: ./scripts/health-demo.sh
-        dst: /usr/share/kube-tunnel/scripts/health-demo.sh
-        file_info:
-          mode: 0755
-    scripts:
-      postinstall: "scripts/postinstall.sh"
-      preremove: "scripts/preremove.sh"
-
-snapcrafts:
-  - id: snap
-    name: kube-tunnel
-    publish: true
-    summary: "High-performance Kubernetes service proxy"
-    description: |
-      kube-tunnel is a high-performance Kubernetes service proxy with intelligent
-      protocol detection and automatic service discovery. It eliminates the need
-      for manual port-forwarding by providing DNS-style routing to Kubernetes services.
-
-      Features:
-      - Multi-protocol support (HTTP/1.1, HTTP/2, gRPC)
-      - Automatic port-forwarding with intelligent caching
-      - Background health monitoring
-      - Cross-platform support
-    grade: stable
-    confinement: strict
-    license: MIT
-    apps:
-      kube-tunnel:
-        command: kube-tunnel
-        plugs: ["home", "network", "network-bind"]
 
 sboms:
   - artifacts: archive

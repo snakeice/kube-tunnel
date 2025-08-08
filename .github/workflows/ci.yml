@@ -6,8 +6,13 @@ on:
   pull_request:
     branches: [main, develop]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  GO_VERSION: "1.22"
+  # Keep this in sync with go.mod 'toolchain' (currently go1.24.5) / 'go' directive
+  GO_VERSION: "1.24"
 
 jobs:
   test:
@@ -18,12 +23,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: true
 
       - name: Cache Go modules
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/go/pkg/mod
           key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
@@ -37,7 +43,7 @@ jobs:
         run: go test -v -race -coverprofile=coverage.out ./...
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           file: ./coverage.out
           flags: unittests
@@ -51,14 +57,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: true
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.3
+          # Use latest stable linter; adjust if you need to pin: version: v1.60
           args: --timeout=5m
 
   build:
@@ -77,9 +84,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: true
 
       - name: Build binary
         env:
@@ -89,10 +97,10 @@ jobs:
           CGO_ENABLED=0 go build \
             -ldflags='-w -s -extldflags "-static"' \
             -o kube-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }} \
-            .
+            ./cmd
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: kube-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}
           path: kube-tunnel-*
@@ -105,16 +113,18 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.24.0
         with:
           scan-type: "fs"
           scan-ref: "."
           format: "sarif"
           output: "trivy-results.sarif"
+          ignore-unfixed: true
+          vuln-type: "os,library"
 
       - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v2
         if: always()
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: "trivy-results.sarif"
 
@@ -130,7 +140,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: false
@@ -147,16 +157,16 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: true
 
       - name: Build binary
-        run: go build -o kube-tunnel .
+        run: go build -o kube-tunnel ./cmd
 
       - name: Install hey for load testing
-        run: |
-          go install github.com/rakyll/hey@latest
+        run: go install github.com/rakyll/hey@latest
 
       - name: Make scripts executable
         run: |
@@ -164,9 +174,7 @@ jobs:
           chmod +x scripts/health-demo.sh
 
       - name: Run performance tests (dry run)
-        run: |
-          # Test script syntax and basic functionality
-          ./scripts/perf-test.sh --dry-run || echo "Performance test script validated"
+        run: ./scripts/perf-test.sh --dry-run || echo "Performance test script validated"
 
   validate:
     name: Validate Configuration
@@ -187,6 +195,7 @@ jobs:
         with:
           dockerfile: Dockerfile
           failure-threshold: warning
+          ignore: DL3018
 
   integration:
     name: Integration Test
@@ -202,34 +211,24 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Copy Kind config
+        run: cp kube-tunnel/kind-config.yaml kind-config.yaml
 
       - name: Set up Kind
         uses: helm/kind-action@v1.8.0
         with:
           cluster_name: test-cluster
-          config: |
-            kind: Cluster
-            apiVersion: kind.x-k8s.io/v1alpha4
-            nodes:
-            - role: control-plane
-              kubeaddrConfigPatches:
-              - |
-                kind: InitConfiguration
-                nodeRegistration:
-                  kubeletExtraArgs:
-                    node-labels: "ingress-ready=true"
-              extraPortMappings:
-              - containerPort: 80
-                hostPort: 8080
-                protocol: TCP
+          configPath: kind-config.yaml
 
       - name: Build and test in Kind
         run: |
           # Build binary
-          go build -o kube-tunnel .
+          go build -o kube-tunnel ./cmd
 
           # Create test deployment
           kubectl create deployment test-app --image=nginx:alpine

@@ -27,7 +27,7 @@
 ```bash
 git clone https://github.com/snakeice/kube-tunnel
 cd kube-tunnel
-go build -o kube-tunnel .
+go build -o kube-tunnel ./cmd
 ```
 
 ### Basic Usage
