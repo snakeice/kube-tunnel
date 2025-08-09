@@ -1,0 +1,235 @@
+# GoReleaser configuration file
+# https://goreleaser.com
+
+version: 2
+
+project_name: kube-tunnel
+
+env:
+  - GO111MODULE=on
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod download
+
+builds:
+  - id: kube-tunnel
+    main: ./cmd
+    binary: kube-tunnel
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - "6"
+      - "7"
+    ignore:
+      - goos: windows
+        goarch: arm
+      - goos: windows
+        goarch: arm64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+      - -X main.builtBy=goreleaser
+
+archives:
+  - id: default
+    ids:
+      - kube-tunnel
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+      - PERFORMANCE.md
+      - QUICKSTART_PERFORMANCE.md
+      - scripts/perf-test.sh
+      - scripts/health-demo.sh
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^build:"
+      - "^style:"
+      - "^refactor:"
+      - "^chore:"
+      - "merge conflict"
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch
+  groups:
+    - title: "🚀 New Features"
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 1
+    - title: "⚡ Performance Improvements"
+      regexp: "^.*perf[(\\w)]*:+.*$"
+      order: 2
+    - title: "📚 Documentation"
+      regexp: "^.*docs[(\\w)]*:+.*$"
+      order: 3
+    - title: "🔧 Other Changes"
+      order: 999
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  # renamed from name_template due to deprecation (see https://goreleaser.com/deprecations/#snapshotname_template)
+  version_template: "{{ incpatch .Version }}-next"
+
+release:
+  github:
+    owner: snakeice
+    name: kube-tunnel
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## kube-tunnel {{ .Tag }} ({{ .Date }})
+
+    A high-performance Kubernetes service proxy with intelligent protocol detection.
+
+    ### 📊 Performance Highlights
+    - ⚡ Sub-200ms cold start latency
+    - 🚀 <10ms warm request latency
+    - 📈 1000+ req/s throughput
+    - 🔍 Background health monitoring
+
+    ### 🚀 Quick Start
+    ```bash
+    # Download and extract
+    curl -L https://github.com/snakeice/kube-tunnel/releases/download/{{ .Tag }}/kube-tunnel_{{ .Os }}_{{ .Arch }}.tar.gz | tar xz
+
+    # Start proxy
+    ./kube-tunnel
+
+    # Test with your services
+    curl http://my-service.default.svc.cluster.local/health
+    ```
+  footer: |
+    ### 📚 Documentation
+    - [Performance Guide](https://github.com/snakeice/kube-tunnel/blob/{{ .Tag }}/PERFORMANCE.md)
+    - [Quick Setup](https://github.com/snakeice/kube-tunnel/blob/{{ .Tag }}/QUICKSTART_PERFORMANCE.md)
+
+    ### 🐳 Docker Images
+    ```bash
+    docker pull ghcr.io/snakeice/kube-tunnel:{{ .Tag }}
+    docker pull ghcr.io/snakeice/kube-tunnel:latest
+    ```
+
+    **Full Changelog**: https://github.com/snakeice/kube-tunnel/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+dockers:
+  - image_templates:
+      - "ghcr.io/snakeice/kube-tunnel:{{ .Version }}-amd64"
+      - "ghcr.io/snakeice/kube-tunnel:latest-amd64"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--pull"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source=https://github.com/snakeice/kube-tunnel"
+      - "--label=org.opencontainers.image.description=High-performance Kubernetes service proxy with intelligent protocol detection"
+      - "--label=org.opencontainers.image.licenses=MIT"
+      - "--platform=linux/amd64"
+  - image_templates:
+      - "ghcr.io/snakeice/kube-tunnel:{{ .Version }}-arm64"
+      - "ghcr.io/snakeice/kube-tunnel:latest-arm64"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--pull"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source=https://github.com/snakeice/kube-tunnel"
+      - "--label=org.opencontainers.image.description=High-performance Kubernetes service proxy with intelligent protocol detection"
+      - "--label=org.opencontainers.image.licenses=MIT"
+      - "--platform=linux/arm64"
+    goarch: arm64
+
+docker_manifests:
+  - name_template: "ghcr.io/snakeice/kube-tunnel:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/snakeice/kube-tunnel:{{ .Version }}-amd64"
+      - "ghcr.io/snakeice/kube-tunnel:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/snakeice/kube-tunnel:latest"
+    image_templates:
+      - "ghcr.io/snakeice/kube-tunnel:latest-amd64"
+      - "ghcr.io/snakeice/kube-tunnel:latest-arm64"
+
+sboms:
+  - artifacts: archive
+  - id: source
+    artifacts: source
+
+signs:
+  - cmd: cosign
+    env:
+      - COSIGN_EXPERIMENTAL=1
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+docker_signs:
+  - cmd: cosign
+    env:
+      - COSIGN_EXPERIMENTAL=1
+    artifacts: images
+    output: true
+    args:
+      - "sign"
+      - "${artifact}@${digest}"
+      - "--yes"
+
+announce:
+  discord:
+    enabled: true
+    message_template: |
+      🚀 **kube-tunnel {{ .Tag }}** is now available!
+
+      ⚡ Performance improvements and new features for Kubernetes service proxying.
+
+      📥 **Download**: {{ .ReleaseURL }}
+      🐳 **Docker**: `ghcr.io/snakeice/kube-tunnel:{{ .Tag }}`
+
+      {{ .Changelog }}

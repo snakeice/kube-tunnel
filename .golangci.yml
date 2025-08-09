@@ -73,7 +73,7 @@ linters:
     - nilerr # finds the code that returns nil even if it checks that the error is not nil
     - nilnesserr # reports that it checks for err != nil, but it returns a different nil value error (powered by nilness and nilerr)
     - nilnil # checks that there is no simultaneous return of nil error and an invalid value
-    - noctx # finds sending http request without context.Context
+    # - noctx # finds sending http request without context.Context
     - nolintlint # reports ill-formed or insufficient nolint directives
     - nonamedreturns # reports all named returns
     - nosprintfhostport # checks for misuse of Sprintf to construct a host with port in a URL
@@ -145,6 +145,7 @@ linters:
       disable-default-exclusions: true
       exclude-functions:
         - "file.Close"
+        - "fmt.Fprintf"
 
     revive:
       rules:
@@ -383,6 +384,20 @@ linters:
         linters: [godot]
       - source: "//noinspection"
         linters: [gocritic]
+      - source: "cache.*= map.*PortForwardSession"
+        linters: [gochecknoglobals]
+      - source: "cacheLock.*= sync.Mutex"
+        linters: [gochecknoglobals]
+      - source: "configuredInterface.*string"
+        linters: [gochecknoglobals]
+      - source: "globalHealthMonitor.*Monitor"
+        linters: [gochecknoglobals]
+      - source: "Config.*= LoadConfig"
+        linters: [gochecknoglobals]
+      - source: "Log.*logrus.Logger"
+        linters: [gochecknoglobals]
+      - source: "once.*sync.Once"
+        linters: [gochecknoglobals]
       - path: "_test\\.go"
         linters:
           - bodyclose

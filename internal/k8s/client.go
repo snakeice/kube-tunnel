@@ -1,4 +1,4 @@
-package main
+package k8s
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/snakeice/kube-tunnel/internal/logger"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -14,7 +16,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-func getKubeConfig() (*rest.Config, error) {
+func GetKubeConfig() (*rest.Config, error) {
 	if config, err := rest.InClusterConfig(); err == nil {
 		return config, nil
 	}
@@ -28,11 +30,11 @@ func getKubeConfig() (*rest.Config, error) {
 	return config, nil
 }
 
-func getPodNameForService(
+func GetPodNameForService(
 	clientset *kubernetes.Clientset,
 	namespace, service string,
-) (string, int32, error) {
-	log.Printf("Looking up service: %s/%s", namespace, service)
+) (string, int, error) {
+	logger.Log.Infof("Looking up service: %s/%s", namespace, service)
 
 	svc, err := clientset.CoreV1().
 		Services(namespace).
@@ -70,14 +72,11 @@ func getPodNameForService(
 
 			switch svcPort.Type {
 			case intstr.Int:
-				return pod.Name, int32(svcPort.IntValue()), nil
-			default:
-				for _, container := range pod.Spec.Containers {
-					for _, p := range container.Ports {
-						if p.Name == svcPort.String() {
-							return pod.Name, p.ContainerPort, nil
-						}
-					}
+				return pod.Name, svcPort.IntValue(), nil
+			case intstr.String:
+				port, found := findContainerPortByName(pod, svcPort.String())
+				if found {
+					return pod.Name, port, nil
 				}
 			}
 			return pod.Name, 80, nil
@@ -85,4 +84,16 @@ func getPodNameForService(
 	}
 
 	return "", 0, fmt.Errorf("no running pod found for service %s/%s", namespace, service)
+}
+
+// findContainerPortByName searches for a container port by name in the given pod.
+func findContainerPortByName(pod v1.Pod, portName string) (int, bool) {
+	for _, container := range pod.Spec.Containers {
+		for _, p := range container.Ports {
+			if p.Name == portName {
+				return int(p.ContainerPort), true
+			}
+		}
+	}
+	return 0, false
 }
