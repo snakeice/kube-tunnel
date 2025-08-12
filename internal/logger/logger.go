@@ -1,40 +1,46 @@
-package main
+package logger
 
 import (
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
 )
 
-var log *logrus.Logger
+var (
+	Log  *logrus.Logger
+	once sync.Once
+)
 
-func init() {
-	log = logrus.New()
+func Setup() {
+	once.Do(func() {
+		Log = logrus.New()
+	})
 
 	// Set output to stdout
-	log.SetOutput(os.Stdout)
+	Log.SetOutput(os.Stdout)
 
 	// Set log level based on environment
 	level := strings.ToLower(os.Getenv("LOG_LEVEL"))
 	switch level {
 	case "debug":
-		log.SetLevel(logrus.DebugLevel)
+		Log.SetLevel(logrus.DebugLevel)
 	case "info":
-		log.SetLevel(logrus.InfoLevel)
+		Log.SetLevel(logrus.InfoLevel)
 	case "warn", "warning":
-		log.SetLevel(logrus.WarnLevel)
+		Log.SetLevel(logrus.WarnLevel)
 	case "error":
-		log.SetLevel(logrus.ErrorLevel)
+		Log.SetLevel(logrus.ErrorLevel)
 	default:
-		log.SetLevel(logrus.InfoLevel)
+		Log.SetLevel(logrus.InfoLevel)
 	}
 
 	// Use custom formatter with colors and emojis
-	log.SetFormatter(&CustomFormatter{})
+	Log.SetFormatter(&CustomFormatter{})
 }
 
 type CustomFormatter struct{}
@@ -68,6 +74,14 @@ func (f *CustomFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 		emoji = "💀"
 		color = "\033[35m" // Magenta
 		tag = "FATAL"
+	case logrus.PanicLevel:
+		emoji = "🚨"
+		color = "\033[41m" // Red background
+		tag = "PANIC"
+	case logrus.TraceLevel:
+		emoji = "🔎"
+		color = "\033[34m" // Blue
+		tag = "TRACE"
 	default:
 		emoji = "📝"
 		color = "\033[37m" // White
@@ -134,13 +148,13 @@ func toString(v any) string {
 
 // Convenience functions with emojis and structured fields.
 func LogStartup(message string) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"component": "startup",
 	}).Info("🚀 " + message)
 }
 
 func LogRequest(method, path, protocol, remoteAddr string) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"method":   method,
 		"path":     path,
 		"protocol": protocol,
@@ -149,14 +163,14 @@ func LogRequest(method, path, protocol, remoteAddr string) {
 }
 
 func LogRouting(service, namespace string) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"service":   service,
 		"namespace": namespace,
 	}).Info("🎯 Routing request")
 }
 
 func LogPortForward(service, namespace, pod string, localPort, remotePort int32) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"service":     service,
 		"namespace":   namespace,
 		"pod":         pod,
@@ -167,10 +181,10 @@ func LogPortForward(service, namespace, pod string, localPort, remotePort int32)
 
 func LogPortForwardWithTiming(
 	service, namespace, pod string,
-	localPort, remotePort int32,
+	localPort, remotePort int,
 	setupDuration time.Duration,
 ) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"service":     service,
 		"namespace":   namespace,
 		"pod":         pod,
@@ -181,15 +195,15 @@ func LogPortForwardWithTiming(
 }
 
 func LogPortForwardError(key string, err error, duration time.Duration) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"session":     key,
 		"error":       err.Error(),
 		"duration_ms": duration.Milliseconds(),
 	}).Error("💔 Port-forward error")
 }
 
-func LogPortForwardReuse(service, namespace string, localPort int32) {
-	log.WithFields(logrus.Fields{
+func LogPortForwardReuse(service, namespace string, localPort int) {
+	Log.WithFields(logrus.Fields{
 		"service":    service,
 		"namespace":  namespace,
 		"local_port": localPort,
@@ -197,13 +211,13 @@ func LogPortForwardReuse(service, namespace string, localPort int32) {
 }
 
 func LogPortForwardExpire(key string) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"session": key,
 	}).Info("⏰ Expiring idle port-forward")
 }
 
 func LogProtocolDetection(target, protocol string) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"target":   target,
 		"protocol": protocol,
 	}).Debug("🔍 Detected backend protocol")
@@ -217,7 +231,7 @@ func LogProxy(method, path, sourceProto, targetProto string, isGRPC bool) {
 		icon = "📡"
 	}
 
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"method":       method,
 		"path":         path,
 		"source_proto": sourceProto,
@@ -227,7 +241,7 @@ func LogProxy(method, path, sourceProto, targetProto string, isGRPC bool) {
 }
 
 func LogProxyError(method, path string, err error) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"method": method,
 		"path":   path,
 		"error":  err.Error(),
@@ -235,19 +249,19 @@ func LogProxyError(method, path string, err error) {
 }
 
 func LogHealthCheck(protocol string) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"protocol": protocol,
 	}).Debug("❤️  Health check")
 }
 
 func LogError(message string, err error) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"error": err.Error(),
 	}).Error("❌ " + message)
 }
 
 func LogDebug(message string, fields logrus.Fields) {
-	log.WithFields(fields).Debug("🔧 " + message)
+	Log.WithFields(fields).Debug("🔧 " + message)
 }
 
 func LogResponseMetrics(
@@ -261,19 +275,20 @@ func LogResponseMetrics(
 	var level logrus.Level
 
 	// Choose emoji and level based on status code
-	if statusCode >= 200 && statusCode < 300 {
+	switch {
+	case statusCode >= 200 && statusCode < 300:
 		emoji = "✅"
 		level = logrus.InfoLevel
-	} else if statusCode >= 300 && statusCode < 400 {
+	case statusCode >= 300 && statusCode < 400:
 		emoji = "↗️ "
 		level = logrus.InfoLevel
-	} else if statusCode >= 400 && statusCode < 500 {
+	case statusCode >= 400 && statusCode < 500:
 		emoji = "⚠️ "
 		level = logrus.WarnLevel
-	} else if statusCode >= 500 {
+	case statusCode >= 500:
 		emoji = "💥"
 		level = logrus.ErrorLevel
-	} else {
+	default:
 		emoji = "❓"
 		level = logrus.InfoLevel
 	}
@@ -294,11 +309,11 @@ func LogResponseMetrics(
 		fields["performance"] = "fast"
 	}
 
-	log.WithFields(fields).Log(level, emoji+" Response completed")
+	Log.WithFields(fields).Log(level, emoji+" Response completed")
 }
 
 func LogRequestStart(method, path string, isGRPC bool, requestSize int64) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"method":       method,
 		"path":         path,
 		"grpc":         isGRPC,
@@ -308,7 +323,7 @@ func LogRequestStart(method, path string, isGRPC bool, requestSize int64) {
 
 func LogProxyMetrics(
 	service, namespace string,
-	localPort int32,
+	localPort int,
 	duration time.Duration,
 	success bool,
 ) {
@@ -323,7 +338,7 @@ func LogProxyMetrics(
 		level = logrus.ErrorLevel
 	}
 
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"service":     service,
 		"namespace":   namespace,
 		"local_port":  localPort,
@@ -333,15 +348,15 @@ func LogProxyMetrics(
 }
 
 func LogRetry(attempt int, delay string, err error) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"attempt": attempt,
 		"delay":   delay,
 		"error":   err.Error(),
 	}).Warn("🔄 Retrying connection")
 }
 
-func LogRetryWithTiming(attempt uint, delay string, err error, attemptDuration time.Duration) {
-	log.WithFields(logrus.Fields{
+func LogRetryWithTiming(attempt int, delay string, err error, attemptDuration time.Duration) {
+	Log.WithFields(logrus.Fields{
 		"attempt":    attempt,
 		"delay":      delay,
 		"error":      err.Error(),
@@ -350,13 +365,13 @@ func LogRetryWithTiming(attempt uint, delay string, err error, attemptDuration t
 }
 
 func LogRetrySuccess(attempt int) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"attempt": attempt,
 	}).Info("✅ Connection successful after retry")
 }
 
-func LogRetrySuccessWithTiming(attempt uint, attemptDuration, totalDuration time.Duration) {
-	log.WithFields(logrus.Fields{
+func LogRetrySuccessWithTiming(attempt int, attemptDuration, totalDuration time.Duration) {
+	Log.WithFields(logrus.Fields{
 		"attempt":    attempt,
 		"attempt_ms": attemptDuration.Milliseconds(),
 		"total_ms":   totalDuration.Milliseconds(),
@@ -364,29 +379,29 @@ func LogRetrySuccessWithTiming(attempt uint, attemptDuration, totalDuration time
 }
 
 func LogRetryFailed(totalAttempts int, err error) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"total_attempts": totalAttempts,
 		"error":          err.Error(),
 	}).Error("🔴 Connection failed after all retries")
 }
 
-func LogRetryFailedWithTiming(totalAttempts uint, err error, totalDuration time.Duration) {
-	log.WithFields(logrus.Fields{
+func LogRetryFailedWithTiming(totalAttempts int, err error, totalDuration time.Duration) {
+	Log.WithFields(logrus.Fields{
 		"total_attempts": totalAttempts,
 		"error":          err.Error(),
 		"total_ms":       totalDuration.Milliseconds(),
 	}).Error("🔴 Connection failed after all retries")
 }
 
-func LogBackendHealth(port int32, status string) {
-	log.WithFields(logrus.Fields{
+func LogBackendHealth(port int, status string) {
+	Log.WithFields(logrus.Fields{
 		"port":   port,
 		"status": status,
 	}).Debug("🏥 Backend health check")
 }
 
-func LogConnectionCanceled(method, path string, attempt uint) {
-	log.WithFields(logrus.Fields{
+func LogConnectionCanceled(method, path string, attempt int) {
+	Log.WithFields(logrus.Fields{
 		"method":  method,
 		"path":    path,
 		"attempt": attempt,
@@ -394,7 +409,7 @@ func LogConnectionCanceled(method, path string, attempt uint) {
 }
 
 func LogNonRetryableError(method, path string, err error, isGRPC bool) {
-	log.WithFields(logrus.Fields{
+	Log.WithFields(logrus.Fields{
 		"method": method,
 		"path":   path,
 		"error":  err.Error(),
@@ -402,8 +417,8 @@ func LogNonRetryableError(method, path string, err error, isGRPC bool) {
 	}).Error("❌ Non-retryable error")
 }
 
-func LogRetryAttempt(attempt, maxRetries uint, method, path string, isGRPC bool) {
-	log.WithFields(logrus.Fields{
+func LogRetryAttempt(attempt, maxRetries int, method, path string, isGRPC bool) {
+	Log.WithFields(logrus.Fields{
 		"attempt":     attempt,
 		"max_retries": maxRetries,
 		"method":      method,
