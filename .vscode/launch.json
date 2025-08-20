@@ -8,7 +8,7 @@
       "name": "Launch kube-tunnel",
       "type": "go",
       "request": "launch",
-      "program": "${workspaceFolder}"
+      "program": "${workspaceFolder}/cmd"
     }
   ]
 }

@@ -375,7 +375,9 @@ linters:
       # Enable/disable `os.TempDir()` detections.
       # Default: false
       os-temp-dir: true
-
+    gosec:
+      excludes:
+        - G204
   exclusions:
     rules:
       - source: "err :="

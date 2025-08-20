@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/snakeice/kube-tunnel/internal/app"
+	"github.com/snakeice/kube-tunnel/internal/config"
 	"github.com/snakeice/kube-tunnel/internal/logger"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
@@ -39,6 +40,15 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	mux := container.Mux
 
+	server := createServer(*port, conf, mux)
+	go startServer(server, *port, container)
+
+	<-sigChan
+	shutdownServer(server, container)
+}
+
+// createServer creates and configures the HTTP server.
+func createServer(port int, conf *config.Config, mux http.Handler) *http.Server {
 	h2s := &http2.Server{
 		MaxConcurrentStreams:         conf.Performance.MaxConcurrentStreams,
 		MaxReadFrameSize:             conf.Performance.MaxFrameSize,
@@ -48,36 +58,58 @@ func main() {
 		MaxUploadBufferPerStream:     conf.Performance.MaxUploadBufferPerStream,
 	}
 	handler := h2c.NewHandler(mux, h2s)
+
+	addr := ":" + strconv.Itoa(port)
 	server := &http.Server{
-		Addr:         ":" + strconv.Itoa(*port),
+		Addr:         addr,
 		Handler:      handler,
 		ReadTimeout:  conf.Performance.ReadTimeout,
 		WriteTimeout: conf.Performance.WriteTimeout,
 		IdleTimeout:  conf.Performance.IdleTimeout,
 	}
+
 	if err := http2.ConfigureServer(server, h2s); err != nil {
 		logger.LogError("Failed to configure HTTP/2 server", err)
 		os.Exit(1)
 	}
-	go func() {
-		url := "http://localhost:" + strconv.Itoa(*port)
-		logger.Log.Infof("🌐 Proxy server running at %s", url)
 
+	return server
+}
+
+// startServer starts the server and logs startup information.
+func startServer(server *http.Server, port int, container *app.Container) {
+	displayHost := "localhost"
+	url := "http://" + displayHost + ":" + strconv.Itoa(port)
+
+	logger.Log.Infof("🌐 Proxy server running at %s", url)
+	logger.Log.Infof("🔗 Port forwards using IP: %s", container.Cache.GetPortForwardIP())
+
+	if displayHost != "127.0.0.1" {
 		logger.Log.Infof(
-			"💡 Test: curl http://my-service.default.svc.cluster.local:%d/health", *port)
-		logger.Log.Infof("📊 Health monitoring: %s/health/status", url)
-		logger.Log.Infof("📈 Health metrics: %s/health/metrics", url)
-		logger.Log.Infof("🚀 Server listening on port %d (HTTP/1.1, h2c, h2 with TLS, gRPC)", *port)
-		logger.Log.Info("✅ Ready to proxy requests to *.svc.cluster.local services")
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.LogError("Server failed to start", err)
-			os.Exit(1)
-		}
-	}()
-	<-sigChan
+			"💡 Test: curl http://my-service.default.svc.cluster.local:%d/health",
+			port,
+		)
+		logger.Log.Infof("💡 Or directly: curl %s/health", url)
+	} else {
+		logger.Log.Infof("💡 Test: curl http://my-service.default.svc.cluster.local:%d/health", port)
+	}
+	logger.Log.Infof("📊 Health monitoring: %s/health/status", url)
+	logger.Log.Infof("📈 Health metrics: %s/health/metrics", url)
+	logger.Log.Infof("🚀 Server listening on %s (HTTP/1.1, h2c, h2 with TLS, gRPC)", server.Addr)
+	logger.Log.Info("✅ Ready to proxy requests to *.svc.cluster.local services")
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.LogError("Server failed to start", err)
+		os.Exit(1)
+	}
+}
+
+// shutdownServer gracefully shuts down the server and application.
+func shutdownServer(server *http.Server, container *app.Container) {
 	logger.Log.Info("🛑 Received shutdown signal, gracefully shutting down...")
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
 	if err := server.Shutdown(ctx); err != nil {
 		logger.LogError("Server forced to shutdown", err)
 	}

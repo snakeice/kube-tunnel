@@ -52,7 +52,7 @@ func (p *Proxy) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	localPort, err := p.cache.EnsurePortForward(service, namespace)
+	localIP, localPort, err := p.cache.EnsurePortForward(service, namespace)
 	if err != nil {
 		logger.LogError(fmt.Sprintf("Port-forward failed for %s.%s", service, namespace), err)
 		if isGRPC {
@@ -67,19 +67,20 @@ func (p *Proxy) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	logger.LogDebug(
 		"Port-forward ready",
-		logrus.Fields{"service": service, "namespace": namespace, "port": localPort},
+		logrus.Fields{"service": service, "namespace": namespace, "ip": localIP, "port": localPort},
 	)
 
-	p.checkBackendHealth(service, namespace, localPort)
+	p.checkBackendHealth(service, namespace, localIP, localPort)
 
 	responseWriter := &responseWriterWrapper{ResponseWriter: w, statusCode: 200}
-	rp := createReverseProxy(localPort, isGRPC, responseWriter)
+	rp := createReverseProxy(localIP, localPort, isGRPC, responseWriter)
 	logger.LogDebug(
 		"Proxying with protocol fallback",
 		logrus.Fields{
 			"service":    service,
 			"namespace":  namespace,
 			"is_grpc":    isGRPC,
+			"local_ip":   localIP,
 			"local_port": localPort,
 		},
 	)
@@ -106,7 +107,7 @@ func (p *Proxy) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
-func (p *Proxy) checkBackendHealth(service, namespace string, localPort int) {
+func (p *Proxy) checkBackendHealth(service, namespace string, localIP string, localPort int) {
 	if p.health == nil {
 		return
 	}
@@ -121,7 +122,7 @@ func (p *Proxy) checkBackendHealth(service, namespace string, localPort int) {
 	if p.cfg != nil && p.cfg.Performance.SkipHealthCheck {
 		return
 	}
-	if err := healthCheckBackend(localPort, 500*time.Millisecond); err != nil {
+	if err := healthCheckBackendOnIP(localIP, localPort, 500*time.Millisecond); err != nil {
 		logger.LogBackendHealth(localPort, "unhealthy")
 	} else {
 		logger.LogBackendHealth(localPort, "healthy")
