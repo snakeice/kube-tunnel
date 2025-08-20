@@ -8,6 +8,7 @@ import (
 	"github.com/snakeice/kube-tunnel/internal/config"
 	"github.com/snakeice/kube-tunnel/internal/dns"
 	"github.com/snakeice/kube-tunnel/internal/health"
+	"github.com/snakeice/kube-tunnel/internal/logger"
 	"github.com/snakeice/kube-tunnel/internal/proxy"
 )
 
@@ -37,11 +38,36 @@ func Build() (*Container, error) {
 
 	c.Monitor = health.NewHealthMonitor(cfg.Health)
 	c.Monitor.Start()
-	c.Cache = cache.NewCache(c.Monitor)
 
-	c.DNS = dns.NewProxyDNS()
+	// Step 1: Create cache with localhost initially (will be updated after virtual interface is created)
+	c.Cache = cache.NewCacheWithIP(c.Monitor, cfg, "")
+	portForwardIP := c.Cache.GetPortForwardIP()
+	logger.Log.Infof("Initial port forward IP configured: %s", portForwardIP)
+
+	// Step 2: Start DNS server on localhost first
+	c.DNS = dns.NewProxyDNS(cfg, portForwardIP)
 	if err := c.DNS.Start(); err != nil {
 		return nil, err
+	}
+
+	// Step 3: Update cache with virtual interface IP if it was created
+	if cfg.Network.UseVirtualInterface {
+		// Try to get the actual virtual interface IP from the DNS server
+		if actualIP := c.DNS.GetVirtualInterfaceIP(); actualIP != "" {
+			logger.Log.Infof("Virtual interface created with IP: %s", actualIP)
+
+			// Rebind DNS server to virtual interface IP
+			if err := c.DNS.RebindToVirtualInterface(actualIP); err != nil {
+				logger.Log.Warnf("Failed to rebind DNS server to virtual interface: %v", err)
+				logger.Log.Infof("DNS server will continue running on localhost")
+			} else {
+				logger.Log.Infof("DNS server successfully bound to virtual interface IP: %s", actualIP)
+			}
+
+			// Update the cache with the actual IP
+			c.Cache = cache.NewCacheWithIP(c.Monitor, cfg, actualIP)
+			logger.Log.Infof("Updated port forward IP to: %s", actualIP)
+		}
 	}
 
 	c.Proxy = proxy.New(c.Cache, c.Monitor, cfg)
@@ -56,13 +82,23 @@ func Build() (*Container, error) {
 
 // Shutdown gracefully stops long running components.
 func (c *Container) Shutdown(ctx context.Context) error {
+	logger.Log.Info("Shutting down application components...")
+
+	// Stop health monitor
 	if c.Monitor != nil {
+		logger.Log.Debug("Stopping health monitor...")
 		c.Monitor.Stop()
 	}
+
+	// Stop DNS server and clean up virtual interface
 	if c.DNS != nil {
+		logger.Log.Debug("Stopping DNS server...")
 		if err := c.DNS.Stop(); err != nil {
+			logger.Log.Errorf("Failed to stop DNS server: %v", err)
 			return err
 		}
 	}
+
+	logger.Log.Info("Application shutdown completed successfully")
 	return nil
 }

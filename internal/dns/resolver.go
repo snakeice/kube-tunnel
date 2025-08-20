@@ -2,95 +2,52 @@ package dns
 
 import (
 	"errors"
-	"fmt"
-	"os/exec"
-	"regexp"
-	"strings"
 
+	"github.com/snakeice/kube-tunnel/internal/config"
 	"github.com/snakeice/kube-tunnel/internal/logger"
 )
 
-var configuredInterface string
-
-// getDefaultInterface detects active network interface (non-loopback).
-func getDefaultInterface() (string, error) {
-	routeCmd := exec.Command("ip", "route", "get", "8.8.8.8")
-	output, err := routeCmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("failed to detect default route: %w", err)
-	}
-
-	out := string(output)
-	fields := strings.Fields(out)
-	for i, f := range fields {
-		if f == "dev" && i+1 < len(fields) {
-			return fields[i+1], nil
-		}
-	}
-	return "", fmt.Errorf("interface not found in output: %s", out)
-}
+var (
+	ErrDNSNotConfigured = errors.New("DNS not configured")
+)
 
 // SetupDNS configures systemd-resolved to redirect domain to our local DNS.
-func SetupDNS(domain string, port int) error {
-	iface, err := getDefaultInterface()
-	if err != nil {
-		return err
-	}
-	configuredInterface = iface
-
-	cmds := [][]string{
-		{"sudo", "-v"},
-		{"sudo", "resolvectl", "dns", iface, fmt.Sprintf("127.0.0.1:%d", port)},
-		{"sudo", "resolvectl", "domain", iface, "~" + domain},
+// It uses the virtual interface if available, otherwise skips DNS configuration.
+func SetupDNS(domain string, port int, cfg *config.Config) (*VirtualInterface, error) {
+	if !cfg.Network.UseVirtualInterface {
+		logger.Log.Info("Virtual interface disabled, skipping DNS configuration")
+		return nil, ErrDNSNotConfigured
 	}
 
-	for _, cmd := range cmds {
-		logger.Log.Infof("Executing: %s", strings.Join(cmd, " "))
-		// Ensure error handling for exec.Command
-		//nolint:gosec // Commands are controlled and safe
-		out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("command failed: %w", err)
-		}
-		// Ensure subprocess output is logged
-		logger.Log.Infof("Command output: %s", string(out))
+	// Create and configure virtual interface
+	virtualInterface := NewVirtualInterface(cfg)
+	if err := virtualInterface.Create(); err != nil {
+		logger.Log.Warnf("Failed to create virtual interface: %v", err)
+		logger.Log.Info("Skipping DNS configuration - virtual interface creation failed")
+		return nil, ErrDNSNotConfigured
+	}
+
+	// Setup DNS on the virtual interface
+	if err := virtualInterface.SetupDNS(domain, port); err != nil {
+		logger.Log.Warnf("Failed to setup DNS on virtual interface: %v", err)
+		logger.Log.Info("Skipping DNS configuration - DNS setup failed")
+		return nil, ErrDNSNotConfigured
 	}
 
 	logger.Log.Infof(
-		"resolvectl configuration applied on interface %s for domain ~%s",
-		iface,
-		domain,
+		"DNS configured successfully on virtual interface %s",
+		virtualInterface.GetName(),
 	)
-	return nil
+	return virtualInterface, nil
 }
 
-// RevertDNS reverts DNS configurations on the used interface.
+// RevertDNS reverts DNS configurations on the virtual interface.
 func RevertDNS() error {
-	if configuredInterface == "" {
-		var err error
-		configuredInterface, err = getDefaultInterface()
-		if err != nil {
-			return err
-		}
-	}
+	logger.Log.Debug("Reverting DNS configuration")
 
-	// Validate interface name: allow typical chars (alnum, - _ . :) to mitigate injection risk.
-	// While exec.Command with fixed args is already safe from shell injection, we add a sanity
-	// check to satisfy gosec (G204) and ensure we don't accidentally pass unexpected values.
-	validIface := regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
-	if !validIface.MatchString(configuredInterface) {
-		return errors.New("invalid network interface name")
-	}
+	// The virtual interface cleanup is now handled directly by the ProxyDNS.Stop() method
+	// This function is kept for compatibility but most cleanup is done elsewhere
 
-	// #nosec G204 -- arguments are fixed strings plus validated interface name.
-	cmd := exec.Command("sudo", "resolvectl", "revert", configuredInterface)
-	logger.Log.Infof("Executing: %s", strings.Join(cmd.Args, " "))
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		logger.Log.Errorf("Error: %v\nOutput: %s", err, out)
-		return fmt.Errorf("failed to revert resolvectl: %w", err)
-	}
-
-	logger.Log.Infof("resolvectl revert executed successfully on interface %s", configuredInterface)
+	logger.Log.Debug("DNS configuration revert completed")
 	return nil
 }

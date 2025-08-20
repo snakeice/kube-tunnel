@@ -139,6 +139,14 @@ func getRetryConfig() (int, time.Duration) {
 	return maxRetries, baseDelay
 }
 
+// minDuration returns the smaller of two time.Duration values.
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // retryableTransport wraps a transport with retry logic for connection failures.
 type retryableTransport struct {
 	base       http.RoundTripper
@@ -196,7 +204,7 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 
 		// Don't wait after the last attempt
 		if attempt < rt.maxRetries {
-			delay := min(
+			delay := minDuration(
 				// Faster exponential backoff
 				rt.baseDelay*time.Duration(1<<attempt),
 				// Cap at 1 second instead of 5
@@ -246,8 +254,7 @@ func isRetryableError(err error) bool {
 		strings.Contains(errStr, "HTTP/1.x transport connection broken")
 }
 
-// healthCheckBackend performs a quick health check on the backend service.
-func healthCheckBackend(port int, timeout time.Duration) error {
+func healthCheckBackendOnIP(ip string, port int, timeout time.Duration) error {
 	client := &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
@@ -256,7 +263,7 @@ func healthCheckBackend(port int, timeout time.Duration) error {
 	}
 
 	// Try a simple HEAD request to check if the service is responding
-	resp, err := client.Head(fmt.Sprintf("http://localhost:%d/", port))
+	resp, err := client.Head("http://" + net.JoinHostPort(ip, strconv.Itoa(port)) + "/")
 	if err != nil {
 		return err
 	}
@@ -272,6 +279,7 @@ func healthCheckBackend(port int, timeout time.Duration) error {
 
 // protocolFallbackTransport tries different protocols on failure.
 type protocolFallbackTransport struct {
+	ip         string
 	port       int
 	isGRPC     bool
 	maxRetries int
@@ -347,14 +355,16 @@ func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Respon
 }
 
 // createProtocolFallbackTransport creates a transport that tries multiple protocols.
-func createProtocolFallbackTransport(port int, isGRPC bool) http.RoundTripper {
+func createProtocolFallbackTransport(ip string, port int, isGRPC bool) http.RoundTripper {
 	maxRetries, baseDelay := getRetryConfig()
 
 	return &protocolFallbackTransport{
+		ip:         ip,
 		port:       port,
 		isGRPC:     isGRPC,
 		maxRetries: maxRetries,
 		baseDelay:  baseDelay,
+		config:     config.GetConfig().Performance,
 	}
 }
 
@@ -416,11 +426,10 @@ func setGRPCHeaders(req *http.Request) {
 }
 
 // proxyDirector creates the director function for the reverse proxy.
-func proxyDirector(localPort int, isGRPC bool) func(req *http.Request) {
+func proxyDirector(localIP string, localPort int, isGRPC bool) func(*http.Request) {
 	return func(req *http.Request) {
-		originalProto := req.Proto
 		req.URL.Scheme = "http"
-		req.URL.Host = fmt.Sprintf("localhost:%d", localPort)
+		req.URL.Host = fmt.Sprintf("%s:%d", localIP, localPort)
 
 		if req.Header.Get("Connection") == "" && req.ProtoMajor == 2 {
 			req.Header.Del("Connection")
@@ -432,7 +441,7 @@ func proxyDirector(localPort int, isGRPC bool) func(req *http.Request) {
 		if isGRPC {
 			setGRPCHeaders(req)
 		}
-		logger.LogProxy(req.Method, req.URL.Path, originalProto, "auto-detect", isGRPC)
+		logger.LogProxy(req.Method, req.URL.Path, req.Proto, "auto-detect", isGRPC)
 	}
 }
 
@@ -500,13 +509,14 @@ func proxyErrorHandler(isGRPC bool) func(http.ResponseWriter, *http.Request, err
 
 // createReverseProxy configures and returns a new httputil.ReverseProxy.
 func createReverseProxy(
+	localIP string,
 	localPort int,
 	isGRPC bool,
 	w *responseWriterWrapper,
 ) *httputil.ReverseProxy {
-	transport := createProtocolFallbackTransport(localPort, isGRPC)
+	transport := createProtocolFallbackTransport(localIP, localPort, isGRPC)
 	rp := &httputil.ReverseProxy{
-		Director:  proxyDirector(localPort, isGRPC),
+		Director:  proxyDirector(localIP, localPort, isGRPC),
 		Transport: transport,
 		ModifyResponse: proxyModifyResponse( //nolint:bodyclose // handled via wrapper
 			w,

@@ -21,9 +21,6 @@ func Setup() {
 		Log = logrus.New()
 	})
 
-	// Set output to stdout
-	Log.SetOutput(os.Stdout)
-
 	// Set log level based on environment
 	level := strings.ToLower(os.Getenv("LOG_LEVEL"))
 	switch level {

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Free Local IP Management**: Automatic allocation of unused local IP addresses (127.0.0.2+) for port forwards to avoid localhost conflicts
+- New environment variables for IP configuration:
+  - `USE_FREE_LOCAL_IP`: Enable/disable automatic IP allocation (default: true)
+  - `FORCE_LOCAL_IP`: Force a specific local IP address
+  - `PROXY_BIND_IP`: Configure proxy server bind address
+  - `DNS_BIND_IP`: Configure DNS server bind address  
+  - `PORT_FORWARD_BIND_IP`: Configure port forward bind address
+- IP Manager for intelligent local IP allocation and lifecycle management
+- Enhanced DNS server to automatically resolve to allocated IPs
+- Test suite for validating Free Local IP functionality (`examples/test-free-local-ip.sh`)
+- Configuration examples (`examples/free-local-ip.env`)
+- Comprehensive documentation (`FREE_LOCAL_IP.md`)
+
+### Changed
+- Port forwards now use allocated local IPs instead of hardcoded 127.0.0.1
+- DNS resolution automatically points to the correct allocated IP
+- Cache interface updated to return both IP and port information
+- Kubernetes port forwarding enhanced to support specific IP addresses
+
+### Fixed
+- Eliminated localhost conflicts when running local services alongside kube-tunnel
+- Improved support for running multiple kube-tunnel instances simultaneously
+- Better network isolation between local and Kubernetes services
+
 ### Added (since last update)
 
 - Background health monitoring system for continuous service health tracking

@@ -3,58 +3,130 @@ package cache
 import (
 	"context"
 	"fmt"
-	"net"
 	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/snakeice/kube-tunnel/internal/config"
 	"github.com/snakeice/kube-tunnel/internal/health"
 	"github.com/snakeice/kube-tunnel/internal/k8s"
 	"github.com/snakeice/kube-tunnel/internal/logger"
 	"github.com/snakeice/kube-tunnel/internal/tools"
 )
 
-const idleTimeout = 5 * time.Minute
+const (
+	idleTimeout = 5 * time.Minute
+	localhostIP = "127.0.0.1"
+)
 
 type Cache interface {
-	EnsurePortForward(service, namespace string) (int, error)
+	EnsurePortForward(service, namespace string) (string, int, error)
+	GetPortForwardIP() string
 }
 
 type cacheImpl struct {
 	sync.RWMutex
-	sessions map[string]*PortForwardSession
-	monitor  *health.Monitor
+	sessions      map[string]*PortForwardSession
+	monitor       *health.Monitor
+	config        *config.Config
+	portForwardIP string
+	ipManager     *tools.IPManager
 }
 
 type PortForwardSession struct {
+	LocalIP   string
 	LocalPort int
 	Cancel    context.CancelFunc
 	LastUsed  time.Time
 }
 
-func NewCache(m *health.Monitor) Cache {
-	return &cacheImpl{sessions: make(map[string]*PortForwardSession), monitor: m}
+// NewCache creates a new cache instance.
+func NewCache(m *health.Monitor, cfg *config.Config) Cache {
+	impl := &cacheImpl{
+		sessions:  make(map[string]*PortForwardSession),
+		monitor:   m,
+		config:    cfg,
+		ipManager: tools.GetIPManager(),
+	}
+
+	// Determine the IP to use for port forwards
+	if cfg.Network.PortForwardBindIP != "" {
+		impl.portForwardIP = cfg.Network.PortForwardBindIP
+		logger.Log.Infof("Using configured port forward IP: %s", impl.portForwardIP)
+	} else {
+		// Use virtual interface IP if available, otherwise localhost
+		if cfg.Network.UseVirtualInterface && cfg.Network.VirtualInterfaceIP != "" {
+			impl.portForwardIP = cfg.Network.VirtualInterfaceIP
+			logger.Log.Infof("Using virtual interface IP for port forwards: %s", impl.portForwardIP)
+		} else {
+			impl.portForwardIP = localhostIP
+			logger.Log.Info("Using localhost for port forwards: 127.0.0.1")
+		}
+	}
+
+	return impl
 }
 
-func (c *cacheImpl) EnsurePortForward(service, namespace string) (int, error) {
+// NewCacheWithIP creates a new cache with a predefined IP for port forwards.
+func NewCacheWithIP(m *health.Monitor, cfg *config.Config, virtualIP string) Cache {
+	impl := &cacheImpl{
+		sessions:  make(map[string]*PortForwardSession),
+		monitor:   m,
+		config:    cfg,
+		ipManager: tools.GetIPManager(),
+	}
+
+	// If virtual interface IP is provided, use it directly
+	if virtualIP != "" {
+		impl.portForwardIP = virtualIP
+		logger.Log.Infof("Using virtual interface IP for port forwards: %s", impl.portForwardIP)
+		return impl
+	}
+
+	// Otherwise, use the same logic as NewCache
+	if cfg.Network.PortForwardBindIP != "" {
+		impl.portForwardIP = cfg.Network.PortForwardBindIP
+		logger.Log.Infof("Using configured port forward IP: %s", impl.portForwardIP)
+	} else {
+		// Use virtual interface IP if available, otherwise localhost
+		if cfg.Network.UseVirtualInterface && cfg.Network.VirtualInterfaceIP != "" {
+			impl.portForwardIP = cfg.Network.VirtualInterfaceIP
+			logger.Log.Infof("Using virtual interface IP for port forwards: %s", impl.portForwardIP)
+		} else {
+			impl.portForwardIP = localhostIP
+			logger.Log.Info("Using localhost for port forwards: 127.0.0.1")
+		}
+	}
+
+	return impl
+}
+
+func (c *cacheImpl) GetPortForwardIP() string {
+	c.RLock()
+	defer c.RUnlock()
+	return c.portForwardIP
+}
+
+func (c *cacheImpl) EnsurePortForward(service, namespace string) (string, int, error) {
 	startTime := time.Now()
 	key := fmt.Sprintf("%s.%s", service, namespace)
 
 	c.Lock()
 	defer c.Unlock()
 
-	if port, ok := c.tryReusePortForward(key, service, namespace); ok {
-		return port, nil
+	if ip, port, ok := c.tryReusePortForward(key, service, namespace); ok {
+		return ip, port, nil
 	}
 
-	localPort, cancel, err := setupPortForward(key, service, namespace, startTime)
+	localIP, localPort, cancel, err := c.setupPortForward(key, service, namespace, startTime)
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 
 	c.sessions[key] = &PortForwardSession{
+		LocalIP:   localIP,
 		LocalPort: localPort,
 		Cancel:    cancel,
 		LastUsed:  time.Now(),
@@ -62,14 +134,14 @@ func (c *cacheImpl) EnsurePortForward(service, namespace string) (int, error) {
 	if c.monitor != nil {
 		c.monitor.RegisterService(key, localPort)
 	}
-	validatePortForward(localPort)
+	c.validatePortForward(localIP, localPort)
 	go c.autoExpire(key)
 
 	logger.LogDebug("Port-forward setup completed", logrus.Fields{
-		"service": service, "namespace": namespace, "local_port": localPort,
+		"service": service, "namespace": namespace, "local_ip": localIP, "local_port": localPort,
 		"total_setup_ms": time.Since(startTime).Milliseconds(),
 	})
-	return localPort, nil
+	return localIP, localPort, nil
 }
 
 func (c *cacheImpl) autoExpire(key string) {
@@ -85,6 +157,10 @@ func (c *cacheImpl) autoExpire(key string) {
 		if time.Since(session.LastUsed) > idleTimeout {
 			logger.LogPortForwardExpire(key)
 			session.Cancel()
+			// Release the IP back to the manager if it was allocated
+			if session.LocalIP != "127.0.0.1" {
+				c.ipManager.ReleaseLocalIP(session.LocalIP)
+			}
 			delete(c.sessions, key)
 			if c.monitor != nil {
 				c.monitor.UnregisterService(key)
@@ -96,58 +172,73 @@ func (c *cacheImpl) autoExpire(key string) {
 	}
 }
 
-func (c *cacheImpl) tryReusePortForward(key, service, namespace string) (int, bool) {
+func (c *cacheImpl) tryReusePortForward(key, service, namespace string) (string, int, bool) {
 	if pf, ok := c.sessions[key]; ok {
 		logger.LogPortForwardReuse(service, namespace, pf.LocalPort)
 		pf.LastUsed = time.Now()
 		if c.monitor == nil || c.monitor.IsHealthy(key).IsHealthy {
-			return pf.LocalPort, true
+			return pf.LocalIP, pf.LocalPort, true
 		}
-		if validateConnection(pf.LocalPort) == nil {
-			return pf.LocalPort, true
+		if c.validateConnection(pf.LocalIP, pf.LocalPort) == nil {
+			return pf.LocalIP, pf.LocalPort, true
 		}
 		logger.LogDebug(
 			"Cached port-forward is dead, removing from cache",
-			logrus.Fields{"service": service, "namespace": namespace, "port": pf.LocalPort},
+			logrus.Fields{
+				"service":   service,
+				"namespace": namespace,
+				"ip":        pf.LocalIP,
+				"port":      pf.LocalPort,
+			},
 		)
 		pf.Cancel()
+		// Release the IP back to the manager if it was allocated
+		if pf.LocalIP != "127.0.0.1" {
+			c.ipManager.ReleaseLocalIP(pf.LocalIP)
+		}
 		delete(c.sessions, key)
 		if c.monitor != nil {
 			c.monitor.UnregisterService(key)
 		}
 	}
-	return 0, false
+	return "", 0, false
 }
 
-func setupPortForward(
+func (c *cacheImpl) setupPortForward(
 	key, service, namespace string,
 	startTime time.Time,
-) (int, context.CancelFunc, error) {
-	localPort, err := tools.GetFreePort()
+) (string, int, context.CancelFunc, error) {
+	localIP := c.portForwardIP
+	localPort, err := tools.GetFreePortOnIP(localIP)
 	if err != nil {
-		return 0, nil, fmt.Errorf("failed to get free port: %w", err)
+		return "", 0, nil, fmt.Errorf("failed to get free port on IP %s: %w", localIP, err)
 	}
 	cfg, err := k8s.GetKubeConfig()
 	if err != nil {
-		return 0, nil, fmt.Errorf("failed to get kube config: %w", err)
+		return "", 0, nil, fmt.Errorf("failed to get kube config: %w", err)
 	}
 	clientset, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return 0, nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
+		return "", 0, nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 	podName, remotePort, err := k8s.GetPodNameForService(clientset, namespace, service)
 	if err != nil {
-		return 0, nil, fmt.Errorf("failed to get pod for service %s: %w", key, err)
+		return "", 0, nil, fmt.Errorf("failed to get pod for service %s: %w", key, err)
 	}
 	setupDuration := time.Since(startTime)
-	logger.LogPortForwardWithTiming(
-		service, namespace, podName, localPort, remotePort, setupDuration,
-	)
+	logger.LogDebug("Setting up port-forward", logrus.Fields{
+		"service": service, "namespace": namespace, "pod": podName,
+		"local_ip": localIP, "local_port": localPort, "remote_port": remotePort,
+		"setup_duration_ms": setupDuration.Milliseconds(),
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	pfStart := time.Now()
 	go func() {
-		if err := k8s.StartPortForward(ctx, cfg, namespace, podName, localPort, remotePort); err != nil {
-			logger.LogPortForwardError(key, err, time.Since(pfStart))
+		if err := k8s.StartPortForwardOnIP(ctx, cfg, namespace, podName, localIP, localPort, remotePort); err != nil {
+			logger.LogError("Port-forward failed", err)
+			logger.LogDebug("Port-forward error details", logrus.Fields{
+				"service": service, "namespace": namespace, "duration_ms": time.Since(pfStart).Milliseconds(),
+			})
 			return
 		}
 		logger.LogDebug(
@@ -155,22 +246,25 @@ func setupPortForward(
 			logrus.Fields{
 				"service":     service,
 				"namespace":   namespace,
+				"local_ip":    localIP,
+				"local_port":  localPort,
 				"duration_ms": time.Since(pfStart).Milliseconds(),
 			},
 		)
 	}()
-	return localPort, cancel, nil
+	return localIP, localPort, cancel, nil
 }
 
-func validatePortForward(localPort int) {
+func (c *cacheImpl) validatePortForward(localIP string, localPort int) {
 	start := time.Now()
 	maxRetries := 10
 	baseDelay := 100 * time.Millisecond
 	for attempt := range maxRetries { // Go 1.22 intrange
-		if err := validateConnection(localPort); err == nil {
+		if err := c.validateConnection(localIP, localPort); err == nil {
 			logger.LogDebug(
 				"Port-forward validation successful",
 				logrus.Fields{
+					"ip":          localIP,
 					"port":        localPort,
 					"attempt":     attempt + 1,
 					"duration_ms": time.Since(start).Milliseconds(),
@@ -184,6 +278,7 @@ func validatePortForward(localPort int) {
 		}
 		logger.Log.WithFields(
 			logrus.Fields{
+				"ip":          localIP,
 				"port":        localPort,
 				"attempts":    maxRetries,
 				"duration_ms": time.Since(start).Milliseconds(),
@@ -192,13 +287,6 @@ func validatePortForward(localPort int) {
 	}
 }
 
-func validateConnection(port int) error {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), 200*time.Millisecond)
-	if err != nil {
-		return err
-	}
-	if err := conn.Close(); err != nil {
-		logger.LogError("Failed to close connection", err)
-	}
-	return nil
+func (c *cacheImpl) validateConnection(ip string, port int) error {
+	return tools.ValidateConnection(ip, port)
 }

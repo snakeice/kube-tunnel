@@ -4,18 +4,23 @@ import (
 	"math"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/snakeice/kube-tunnel/internal/logger"
 )
 
 const (
-	Kb = 1024
-	Mb = 1024 * Kb
-	Gb = 1024 * Mb
+	Kb                 = 1024
+	Mb                 = 1024 * Kb
+	Gb                 = 1024 * Mb
+	dummyInterfaceType = "dummy"
 )
 
 type Config struct {
 	Performance PerformanceConfig
 	Health      HealthConfig
+	Network     NetworkConfig
 }
 
 type PerformanceConfig struct {
@@ -36,15 +41,50 @@ type PerformanceConfig struct {
 }
 
 type HealthConfig struct {
-	Enabled         bool
-	CheckInterval   time.Duration
-	Timeout         time.Duration
-	MaxFailures     int
-	RecoveryRetries int
+	Enabled       bool
+	CheckInterval time.Duration
+	Timeout       time.Duration
+	MaxFailures   int
+}
+
+type NetworkConfig struct {
+	// Virtual interface configuration for dummy interfaces
+	UseVirtualInterface  bool
+	VirtualInterfaceName string
+	VirtualInterfaceIP   string
+	InterfaceType        string // "dummy" only
+
+	// DNS configuration
+	DNSBindIP string
+
+	// Port forwarding configuration
+	PortForwardBindIP string
+
+	// IP range configuration for finding free IPs
+	CustomIPRanges []string // Custom IP ranges to search for free IPs
 }
 
 func GetConfig() *Config {
-	perf := PerformanceConfig{
+	perf := createDefaultPerformanceConfig()
+	health := createDefaultHealthConfig()
+	network := createDefaultNetworkConfig()
+
+	// Apply environment overrides
+	perf = applyPerformanceOverrides(perf)
+	health = applyHealthOverrides(health)
+	network = applyNetworkOverrides(network)
+
+	// Validate configurations
+	perf = validatePerformanceConfig(perf)
+	health = validateHealthConfig(health)
+	network = validateNetworkConfig(network)
+
+	return &Config{Performance: perf, Health: health, Network: network}
+}
+
+// createDefaultPerformanceConfig creates the default performance configuration.
+func createDefaultPerformanceConfig() PerformanceConfig {
+	return PerformanceConfig{
 		SkipHealthCheck:              false,
 		ForceHTTP2:                   true,
 		DisableProtocolFallback:      false,
@@ -60,15 +100,39 @@ func GetConfig() *Config {
 		MaxUploadBufferPerConnection: 1 * Mb,
 		MaxUploadBufferPerStream:     1 * Mb,
 	}
-	health := HealthConfig{
-		Enabled:         true,
-		CheckInterval:   30 * time.Second,
-		Timeout:         2 * time.Second,
-		MaxFailures:     3,
-		RecoveryRetries: 2,
-	}
+}
 
-	// Performance overrides
+// createDefaultHealthConfig creates the default health configuration.
+func createDefaultHealthConfig() HealthConfig {
+	return HealthConfig{
+		Enabled:       true,
+		CheckInterval: 30 * time.Second,
+		Timeout:       2 * time.Second,
+		MaxFailures:   3,
+	}
+}
+
+// createDefaultNetworkConfig creates the default network configuration.
+func createDefaultNetworkConfig() NetworkConfig {
+	return NetworkConfig{
+		UseVirtualInterface:  true,
+		VirtualInterfaceName: "kube-dummy0",
+		VirtualInterfaceIP:   "10.8.0.1",
+		InterfaceType:        dummyInterfaceType,
+		DNSBindIP:            "",
+		PortForwardBindIP:    "",
+		CustomIPRanges: []string{
+			"10.8.0.0/24",
+			"10.9.0.0/24",
+			"10.10.0.0/24",
+			"172.16.0.0/24",
+			"192.168.100.0/24",
+		},
+	}
+}
+
+// applyPerformanceOverrides applies environment variable overrides to performance config.
+func applyPerformanceOverrides(perf PerformanceConfig) PerformanceConfig {
 	perf.SkipHealthCheck = getEnvBool("SKIP_HEALTH_CHECK", perf.SkipHealthCheck)
 	perf.ForceHTTP2 = !getEnvBool("FORCE_HTTP2", !perf.ForceHTTP2)
 	perf.DisableProtocolFallback = getEnvBool(
@@ -95,15 +159,59 @@ func GetConfig() *Config {
 	if val := os.Getenv("GRPC_TIMEOUT"); val != "" {
 		perf.GRPCTimeout = val
 	}
+	return perf
+}
 
-	// Health overrides
+// applyHealthOverrides applies environment variable overrides to health config.
+func applyHealthOverrides(health HealthConfig) HealthConfig {
 	health.Enabled = !getEnvBool("HEALTH_MONITOR_ENABLED", !health.Enabled)
 	health.CheckInterval = getEnvDuration("HEALTH_CHECK_INTERVAL", health.CheckInterval)
 	health.Timeout = getEnvDuration("HEALTH_CHECK_TIMEOUT", health.Timeout)
 	health.MaxFailures = getEnvInt("HEALTH_MAX_FAILURES", health.MaxFailures)
-	health.RecoveryRetries = getEnvInt("HEALTH_RECOVERY_RETRIES", health.RecoveryRetries)
+	return health
+}
 
-	// Validation
+// applyNetworkOverrides applies environment variable overrides to network config.
+func applyNetworkOverrides(network NetworkConfig) NetworkConfig {
+	if val := os.Getenv("DNS_BIND_IP"); val != "" {
+		network.DNSBindIP = val
+	}
+	if val := os.Getenv("PORT_FORWARD_BIND_IP"); val != "" {
+		network.PortForwardBindIP = val
+	}
+	network.UseVirtualInterface = getEnvBool(
+		"KUBE_TUNNEL_USE_VIRTUAL_INTERFACE",
+		network.UseVirtualInterface,
+	)
+	if val := os.Getenv("KUBE_TUNNEL_VIRTUAL_INTERFACE_NAME"); val != "" {
+		network.VirtualInterfaceName = val
+	}
+	if val := os.Getenv("KUBE_TUNNEL_VIRTUAL_INTERFACE_IP"); val != "" {
+		network.VirtualInterfaceIP = val
+	}
+
+	// Interface type validation - only allow dummy
+	if val := os.Getenv("KUBE_TUNNEL_INTERFACE_TYPE"); val != "" {
+		if val == dummyInterfaceType {
+			network.InterfaceType = val
+		} else {
+			logger.Log.Warnf("Invalid interface type '%s', using default '%s'", val, dummyInterfaceType)
+		}
+	}
+
+	// Custom IP ranges for finding free IPs
+	if val := os.Getenv("KUBE_TUNNEL_CUSTOM_IP_RANGES"); val != "" {
+		ranges := strings.Split(val, ",")
+		for i, rangeStr := range ranges {
+			ranges[i] = strings.TrimSpace(rangeStr)
+		}
+		network.CustomIPRanges = ranges
+	}
+	return network
+}
+
+// validatePerformanceConfig validates performance configuration values.
+func validatePerformanceConfig(perf PerformanceConfig) PerformanceConfig {
 	if perf.MaxIdleConns < 1 {
 		perf.MaxIdleConns = 1
 	}
@@ -119,6 +227,11 @@ func GetConfig() *Config {
 	if perf.MaxFrameSize < 16384 {
 		perf.MaxFrameSize = 16384
 	}
+	return perf
+}
+
+// validateHealthConfig validates health configuration values.
+func validateHealthConfig(health HealthConfig) HealthConfig {
 	if health.CheckInterval < time.Second {
 		health.CheckInterval = 1 * time.Second
 	}
@@ -128,10 +241,20 @@ func GetConfig() *Config {
 	if health.MaxFailures < 1 {
 		health.MaxFailures = 1
 	}
-	if health.RecoveryRetries < 0 {
-		health.RecoveryRetries = 0
+	return health
+}
+
+// validateNetworkConfig validates network configuration values.
+func validateNetworkConfig(network NetworkConfig) NetworkConfig {
+	if network.InterfaceType != dummyInterfaceType {
+		logger.Log.Warnf(
+			"Invalid interface type: %s, using default '%s'",
+			network.InterfaceType,
+			dummyInterfaceType,
+		)
+		network.InterfaceType = dummyInterfaceType
 	}
-	return &Config{Performance: perf, Health: health}
+	return network
 }
 
 func getEnvBool(key string, def bool) bool {

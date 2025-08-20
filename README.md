@@ -12,7 +12,8 @@
 
 - 🚀 **Multi-Protocol Support** - HTTP/1.1, HTTP/2 (h2c/h2), and gRPC on a single port
 - 🔗 **Automatic Port-Forwarding** - Dynamic port-forwards with intelligent caching
-- 🌐 **DNS Integration** - Built-in mDNS server with automatic system DNS configuration
+- 🌐 **Virtual Interface DNS** - Dedicated virtual interface for cluster DNS without VPN interference
+- 🏠 **Free Local IP** - Automatic allocation of unused local IPs to avoid localhost conflicts
 - 📊 **Health Monitoring** - Background health checks with real-time APIs
 - ⚡ **High Performance** - Sub-200ms cold start, <10ms warm requests
 - 🔄 **Smart Retry Logic** - Exponential backoff with configurable policies
@@ -107,6 +108,25 @@ export FORCE_HTTP2=true
 # Retry behavior
 export PROXY_MAX_RETRIES=2
 export PROXY_RETRY_DELAY_MS=100
+
+# Free Local IP configuration
+export USE_FREE_LOCAL_IP=true
+export FORCE_LOCAL_IP=127.0.0.5  # Optional: force specific IP
+```
+
+#### Free Local IP Configuration
+
+```bash
+# Automatic IP allocation (default)
+export USE_FREE_LOCAL_IP=true
+
+# Force specific local IP
+export FORCE_LOCAL_IP=127.0.0.10
+
+# Network binding configuration
+export PROXY_BIND_IP=127.0.0.1
+export DNS_BIND_IP=127.0.0.1
+export PORT_FORWARD_BIND_IP=127.0.0.3
 ```
 
 #### Quick Performance Modes
@@ -121,6 +141,9 @@ export FORCE_HTTP2=true
 export HEALTH_MONITOR_ENABLED=true
 export MAX_IDLE_CONNS=500
 export MAX_CONCURRENT_STREAMS=3000
+
+# Avoid localhost conflicts (recommended)
+export USE_FREE_LOCAL_IP=true
 ```
 
 ## 📊 Health Monitoring
@@ -164,22 +187,56 @@ curl http://localhost:80/services | jq
 
 ## 🌐 DNS Configuration
 
-### Automatic Setup
+### Virtual Interface Mode (Recommended)
 
-kube-tunnel automatically configures DNS resolution with improved error handling and clearer feedback:
+kube-tunnel creates a dedicated virtual network interface for cluster DNS, ensuring VPN compatibility:
 
-| Platform    | Method                        | Status       |
-| ----------- | ----------------------------- | ------------ |
-| **macOS**   | `/etc/resolver/cluster.local` | ✅ Automatic |
-| **Linux**   | systemd-resolved integration  | ✅ Automatic |
-| **Windows** | Manual configuration          | ⚠️ Manual    |
+```bash
+# Default behavior - uses virtual interface
+./kube-tunnel
+
+# Your VPN DNS continues to work
+curl https://external-api.com
+
+# Cluster DNS works through virtual interface
+curl http://my-service.default.svc.cluster.local/api
+```
+
+**Benefits:**
+
+- ✅ **VPN Compatible**: No interference with VPN DNS settings
+- ✅ **Isolated**: Cluster DNS completely separated from main network
+- ✅ **Multiple Instances**: Run multiple kube-tunnel instances simultaneously
+- ✅ **Clean Setup**: Automatic creation and cleanup of virtual interface
+
+### Configuration Options
+
+```bash
+# Enable/disable virtual interface (default: true)
+export KUBE_TUNNEL_USE_VIRTUAL_INTERFACE=true
+
+# Custom interface name (default: kube-dns0)
+export KUBE_TUNNEL_VIRTUAL_INTERFACE_NAME=my-kube-dns
+
+# Custom interface IP (default: 169.254.100.1)
+export KUBE_TUNNEL_VIRTUAL_INTERFACE_IP=172.16.100.1
+```
+
+### Platform Support
+
+| Platform    | Virtual Interface | Legacy Mode     |
+| ----------- | ----------------- | --------------- |
+| **Linux**   | ✅ Recommended    | ✅ Available    |
+| **macOS**   | ❌ Not Available  | ✅ Default      |
+| **Windows** | ❌ Not Available  | ⚠️ Manual Setup |
 
 ### Enhanced DNS Features
 
+- **Virtual Interface**: Dedicated interface for cluster DNS without VPN conflicts
 - **Structured Logging**: All DNS operations are logged with clear, detailed messages
 - **Better Error Messages**: English error descriptions with context for troubleshooting
-- **Automatic Interface Detection**: Smart detection of active network interfaces
-- **Graceful Cleanup**: Automatic DNS configuration cleanup on exit
+- **Automatic Cleanup**: Virtual interfaces are automatically removed on exit
+- **Free Local IP Integration**: DNS automatically resolves to allocated local IPs
 
 ### Manual Configuration
 
@@ -192,10 +249,68 @@ sudo mkdir -p /etc/resolver
 echo -e "nameserver 127.0.0.1\nport 5353" | sudo tee /etc/resolver/cluster.local
 ```
 
-**Linux:**
+**Linux (Legacy Mode):**
 
 ```bash
+# Disable virtual interface for legacy mode
+export KUBE_TUNNEL_USE_VIRTUAL_INTERFACE=false
+./kube-tunnel
+
+# Or configure manually
 echo "127.0.0.1 *.svc.cluster.local" | sudo tee -a /etc/hosts
+```
+
+## 🏠 Free Local IP Management
+
+**kube-tunnel** automatically allocates unused local IP addresses (127.0.0.2+) for port forwards to avoid conflicts with localhost services.
+
+### Why Free Local IP?
+
+- **No Localhost Conflicts**: Run local services on 127.0.0.1 while Kubernetes services use 127.0.0.2+
+- **Multiple Instances**: Run multiple kube-tunnel instances simultaneously
+- **Clean Separation**: Clear isolation between local and Kubernetes services
+
+### Configuration
+
+```bash
+# Automatic allocation (default)
+./kube-tunnel
+# Port forwards will use 127.0.0.2, 127.0.0.3, etc.
+
+# Force specific IP
+export FORCE_LOCAL_IP=127.0.0.10
+./kube-tunnel
+
+# Disable free IP (legacy behavior)
+export USE_FREE_LOCAL_IP=false
+./kube-tunnel
+```
+
+### Examples
+
+```bash
+# Run local service on localhost
+docker run -p 3000:3000 my-app
+
+# Run kube-tunnel (automatically uses 127.0.0.2+)
+./kube-tunnel
+
+# Both work without conflicts!
+curl http://localhost:3000                                    # Local service
+curl http://my-service.default.svc.cluster.local/api         # Kubernetes service
+```
+
+### Testing
+
+```bash
+# Test the free local IP functionality
+./examples/test-free-local-ip.sh
+
+# Check IP allocation
+LOG_LEVEL=debug ./kube-tunnel 2>&1 | grep "local IP"
+
+# Monitor network usage
+netstat -tlnp | grep "127\.0\.0\."
 ```
 
 ## 🐳 Docker & Kubernetes
@@ -378,18 +493,73 @@ watch 'curl -s http://localhost:80/health/metrics | jq ".total_services, .health
 
 # Check DNS configuration logs
 ./kube-tunnel -dns-only
+
+# Test free local IP allocation
+./examples/test-free-local-ip.sh
 ```
+
+### Free Local IP Troubleshooting
+
+```bash
+# Check IP allocation
+LOG_LEVEL=debug ./kube-tunnel 2>&1 | grep "Using.*local IP"
+
+# Force specific IP if auto-detection fails
+export FORCE_LOCAL_IP=127.0.0.50
+./kube-tunnel
+
+# Check available IPs manually
+for i in {2..10}; do
+  ping -c1 -W1 127.0.0.$i 2>/dev/null && echo "127.0.0.$i in use" || echo "127.0.0.$i available"
+done
+
+# Monitor IP usage
+watch 'netstat -tlnp | grep "127\.0\.0\."'
+```
+
+## 🤝 Contributing
 
 ### DNS Troubleshooting
 
-With the improved DNS resolver, you'll get clearer error messages:
+#### Virtual Interface Issues
+
+```bash
+# Test virtual interface functionality
+./examples/test-virtual-interface.sh
+
+# Check virtual interface status
+./examples/test-virtual-interface.sh status
+
+# Clean up if needed
+./examples/test-virtual-interface.sh cleanup
+
+# Verify interface creation
+ip link show kube-dns0
+resolvectl status kube-dns0
+```
+
+#### VPN DNS Conflicts
+
+```bash
+# Check if VPN DNS still works
+dig google.com
+
+# Verify DNS routing
+resolvectl status | grep -A 5 "DNS Domain"
+
+# Force legacy mode if needed
+export KUBE_TUNNEL_USE_VIRTUAL_INTERFACE=false
+./kube-tunnel
+```
+
+#### General DNS Debugging
 
 ```bash
 # Check DNS setup with enhanced logging
 ./kube-tunnel -dns-only
 
 # Verify DNS resolution manually
-dig @127.0.0.1 -p 5353 service.namespace.svc.cluster.local
+dig @169.254.100.1 -p 5353 service.namespace.svc.cluster.local
 
 # Monitor DNS operations in real-time
 LOG_LEVEL=debug ./kube-tunnel 2>&1 | grep -i dns
@@ -416,6 +586,12 @@ go build .
 
 # Performance testing
 ./scripts/perf-test.sh
+
+# Test free local IP functionality
+./examples/test-free-local-ip.sh
+
+# Test virtual interface functionality
+./examples/test-virtual-interface.sh
 ```
 
 ## 📄 License
