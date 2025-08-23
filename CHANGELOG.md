@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1] - 2025-08-23
+
 ### Added
+
 - **Free Local IP Management**: Automatic allocation of unused local IP addresses (127.0.0.2+) for port forwards to avoid localhost conflicts
 - New environment variables for IP configuration:
   - `USE_FREE_LOCAL_IP`: Enable/disable automatic IP allocation (default: true)
@@ -20,20 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test suite for validating Free Local IP functionality (`examples/test-free-local-ip.sh`)
 - Configuration examples (`examples/free-local-ip.env`)
 - Comprehensive documentation (`FREE_LOCAL_IP.md`)
-
-### Changed
-- Port forwards now use allocated local IPs instead of hardcoded 127.0.0.1
-- DNS resolution automatically points to the correct allocated IP
-- Cache interface updated to return both IP and port information
-- Kubernetes port forwarding enhanced to support specific IP addresses
-
-### Fixed
-- Eliminated localhost conflicts when running local services alongside kube-tunnel
-- Improved support for running multiple kube-tunnel instances simultaneously
-- Better network isolation between local and Kubernetes services
-
-### Added (since last update)
-
 - Background health monitoring system for continuous service health tracking
 - Performance optimization with configurable HTTP transport settings
 - Health status APIs (`/health/status` and `/health/metrics`)
@@ -49,9 +38,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cache now registers/unregisters services with the health monitor automatically
 - JSON responses unified via `encoding/json` encoder across health endpoints
 - Network interface name validation (regex) in DNS resolver with documented `#nosec` justification
+- Initial release of kube-tunnel
+- Multi-protocol support (HTTP/1.1, HTTP/2, gRPC)
+- Automatic port-forwarding with intelligent caching
+- DNS-style routing using Kubernetes service names
+- Built-in mDNS server for automatic DNS resolution
+- Cross-platform support (macOS, Linux, Windows)
+- Service discovery and pod selection
+- Automatic cleanup of idle port-forwards
+- Comprehensive logging with structured fields
+- Smart retry logic with exponential backoff
+- TLS support with self-signed certificate generation
+- Command-line interface with flexible options
 
 ### Changed
 
+- Port forwards now use allocated local IPs instead of hardcoded 127.0.0.1
+- DNS resolution automatically points to the correct allocated IP
+- Cache interface updated to return both IP and port information
+- Kubernetes port forwarding enhanced to support specific IP addresses
 - Optimized port-forward setup time (60% faster cold start)
 - Improved request latency (50% faster warm requests)
 - Enhanced connection pooling and HTTP/2 optimization
@@ -67,6 +72,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Eliminated localhost conflicts when running local services alongside kube-tunnel
+- Improved support for running multiple kube-tunnel instances simultaneously
+- Better network isolation between local and Kubernetes services
 - Eliminated nil pointer dereference panic during initialization
 - Fixed health monitor initialization order dependency
 - Improved error handling and graceful degradation
@@ -80,13 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Legacy package-level proxy handler (`legacyHandler`) and health HTTP handlers
 - Global port-forward cache singleton in favor of injected cache instance
 
-### Security (hardening)
+### Security
 
 - Added strict interface name validation to DNS revert/setup to mitigate command injection vectors
-
-### Deprecated
-
-- Package-level proxy and health handler functions (now fully superseded by `Proxy` methods); will be removed entirely in next minor release if no external usage surfaces
+- Minimal attack surface with scratch-based Docker images
+- Non-root user execution in containers
+- Capability dropping and security constraints
+- SBOM generation for all release artifacts
+- Cosign signing for container images and binaries
 
 ### Performance
 
@@ -101,31 +110,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better debugging experience with structured DNS logging**
 - **Consistent error messages across the DNS module**
 
-## [1.0.0] - TBD
-
-### Added
-
-- Initial release of kube-tunnel
-- Multi-protocol support (HTTP/1.1, HTTP/2, gRPC)
-- Automatic port-forwarding with intelligent caching
-- DNS-style routing using Kubernetes service names
-- Built-in mDNS server for automatic DNS resolution
-- Cross-platform support (macOS, Linux, Windows)
-- Service discovery and pod selection
-- Automatic cleanup of idle port-forwards
-- Comprehensive logging with structured fields
-- Smart retry logic with exponential backoff
-- TLS support with self-signed certificate generation
-- Command-line interface with flexible options
-
-### Security
-
-- Minimal attack surface with scratch-based Docker images
-- Non-root user execution in containers
-- Capability dropping and security constraints
-- SBOM generation for all release artifacts
-- Cosign signing for container images and binaries
-
 ### Documentation
 
 - Complete README with quick start guide
@@ -135,22 +119,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Troubleshooting guide with common issues
 - Contributing guidelines for developers
 
+## [1.0.0] - TBD
+
+### Future Plans
+
+- Performance enhancements and optimizations
+- Additional protocol support
+- Extended monitoring capabilities
+
 ---
 
 ## Version History
 
-- **v1.x.x** - Production-ready releases with performance optimizations
-- **v0.x.x** - Development and preview releases
+- **v1.x.x** - Future production-ready releases with performance optimizations
+- **v0.0.1** - Initial release with core functionality and Free Local IP Management
 - **Unreleased** - Latest development changes
 
 ## Migration Guides
 
-### From 0.x to 1.0
+### From future versions
 
-- Update Docker image references to use new registry
-- Review environment variable changes for health monitoring
-- Update Kubernetes RBAC permissions if needed
-- Test performance improvements in your environment
+- Migration guides will be added as new versions are released
+- Current version 0.0.1 serves as the baseline for future migrations
 
 ## Support
 
