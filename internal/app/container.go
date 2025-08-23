@@ -6,6 +6,7 @@ import (
 
 	"github.com/snakeice/kube-tunnel/internal/cache"
 	"github.com/snakeice/kube-tunnel/internal/config"
+	"github.com/snakeice/kube-tunnel/internal/dashboard"
 	"github.com/snakeice/kube-tunnel/internal/dns"
 	"github.com/snakeice/kube-tunnel/internal/health"
 	"github.com/snakeice/kube-tunnel/internal/logger"
@@ -23,12 +24,14 @@ import (
 //
 // The container owns startup/shutdown orchestration.
 type Container struct {
-	Cfg     *config.Config
-	Cache   cache.Cache
-	Monitor *health.Monitor
-	DNS     *dns.ProxyDNS
-	Mux     *http.ServeMux
-	Proxy   *proxy.Proxy
+	Cfg         *config.Config
+	Cache       cache.Cache
+	Monitor     *health.Monitor
+	DNS         *dns.ProxyDNS
+	Mux         *http.ServeMux
+	Proxy       *proxy.Proxy
+	Dashboard   *dashboard.Dashboard
+	PortManager *proxy.EnhancedPortManager
 }
 
 // Build initializes all components with explicit dependency ordering.
@@ -71,18 +74,93 @@ func Build() (*Container, error) {
 	}
 
 	c.Proxy = proxy.New(c.Cache, c.Monitor, cfg)
+
+	// Initialize enhanced port manager
+	mainProxyIP := c.Cache.GetPortForwardIP()
+	mainProxyPort := 80 // Default HTTP port - this will be updated by the main function
+
+	if cfg.Network.UseVirtualInterface {
+		// Get the virtual interface IP for enhanced port management
+		virtualIP := c.DNS.GetVirtualInterfaceIP()
+		if virtualIP != "" {
+			c.PortManager = proxy.NewEnhancedPortManager(
+				virtualIP,
+				mainProxyIP,
+				mainProxyPort,
+				c.Cache,
+				cfg,
+				c.Proxy,
+			)
+			logger.Log.Infof(
+				"Enhanced port manager initialized for virtual interface: %s",
+				virtualIP,
+			)
+		}
+	}
+
+	// Initialize dashboard
+	dashboard, err := dashboard.NewDashboard()
+	if err != nil {
+		return nil, err
+	}
+	c.Dashboard = dashboard
+
 	c.Mux = http.NewServeMux()
 	c.Mux.HandleFunc("/", c.Proxy.HandleProxy)
+
+	// Health endpoints
 	c.Mux.HandleFunc("/health", c.Proxy.HandleHealthCheck)
 	c.Mux.HandleFunc("/health/status", c.Proxy.HandleHealthStatus)
 	c.Mux.HandleFunc("/health/metrics", c.Proxy.HandleHealthMetrics)
+	c.Mux.HandleFunc("/metrics", c.Proxy.HandlePrometheusMetrics)
+
+	// Dashboard endpoints
+	c.Mux.HandleFunc("/dashboard", c.Dashboard.ServeDashboard)
+	c.Mux.HandleFunc("/dashboard/assets/", c.Dashboard.ServeDashboardAssets)
 
 	return c, nil
+}
+
+// StartPortManager starts the enhanced port manager if available.
+func (c *Container) StartPortManager(mainProxyPort int) error {
+	if c.PortManager == nil {
+		logger.Log.Debug("No enhanced port manager to start")
+		return nil
+	}
+
+	// Update the main proxy port
+	c.PortManager.UpdateMainProxyPort(mainProxyPort)
+
+	// Start the enhanced port manager
+	logger.Log.Infof("Starting enhanced port manager with main proxy port: %d", mainProxyPort)
+
+	if err := c.PortManager.StartWithUniversalHandling(); err != nil {
+		return err
+	}
+
+	logger.Log.Info("Enhanced port manager started successfully")
+	return nil
+}
+
+// StopPortManager stops the enhanced port manager if running.
+func (c *Container) StopPortManager() error {
+	if c.PortManager == nil {
+		return nil
+	}
+
+	logger.Log.Debug("Stopping enhanced port manager...")
+	return c.PortManager.StopAll()
 }
 
 // Shutdown gracefully stops long running components.
 func (c *Container) Shutdown(ctx context.Context) error {
 	logger.Log.Info("Shutting down application components...")
+
+	// Stop enhanced port manager
+	if err := c.StopPortManager(); err != nil {
+		logger.Log.Errorf("Failed to stop port manager: %v", err)
+		// Continue with other shutdowns
+	}
 
 	// Stop health monitor
 	if c.Monitor != nil {

@@ -325,11 +325,6 @@ func (vi *VirtualInterface) GetName() string {
 	return vi.name
 }
 
-// IsCreated returns whether the virtual interface has been created.
-func (vi *VirtualInterface) IsCreated() bool {
-	return vi.created
-}
-
 // interfaceExists checks if the interface already exists.
 func (vi *VirtualInterface) interfaceExists() bool {
 	cmd := exec.Command("ip", "link", "show", vi.name)

@@ -13,8 +13,10 @@ import (
 )
 
 // Global IP manager instance.
-var ipOnce sync.Once             //nolint:gochecknoglobals // global instance
-var ipManagerInstance *IPManager //nolint:gochecknoglobals // global instance
+var (
+	ipOnce            sync.Once  //nolint:gochecknoglobals // global instance
+	ipManagerInstance *IPManager //nolint:gochecknoglobals // global instance
+)
 
 func ParseHost(host string) (string, string, error) {
 	parts := strings.Split(host, ".")
@@ -134,6 +136,27 @@ func GetFreePortOnIP(ip string) (int, error) {
 	}
 
 	return port, nil
+}
+
+// IsPortAvailableOnIP checks if a specific port is available on a specific IP address.
+func IsPortAvailableOnIP(ip string, port int) bool {
+	if port <= 0 || port > 65535 {
+		return false
+	}
+
+	addr := fmt.Sprintf("%s:%d", ip, port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return false
+	}
+
+	defer func() {
+		if err := listener.Close(); err != nil {
+			logger.Log.WithError(err).Debug("Failed to close test listener")
+		}
+	}()
+
+	return true
 }
 
 // ValidateConnection tests if a connection can be established to an IP:port.

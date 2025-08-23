@@ -19,10 +19,45 @@ import (
 
 func main() {
 	var (
-		port = flag.Int("port", 80, "Port to run the proxy server on")
-		help = flag.Bool("help", false, "Show help message")
+		port      = flag.Int("port", 80, "Port to run the proxy server on")
+		help      = flag.Bool("help", false, "Show help message")
+		verbose   = flag.Bool("verbose", false, "Enable verbose/debug logging")
+		quiet     = flag.Bool("quiet", false, "Enable quiet mode (errors only)")
+		virtual   = flag.Bool("virtual", false, "Enable virtual interface mode")
+		virtualIP = flag.String(
+			"virtual-ip",
+			"",
+			"Virtual interface IP address (default: auto-allocate)",
+		)
+		healthCheck = flag.Bool("health", true, "Enable health monitoring")
+		dnsIP       = flag.String("dns-ip", "127.0.0.1", "DNS server bind IP address")
+		maxRetries  = flag.Int("max-retries", 2, "Maximum retry attempts for requests")
 	)
 	flag.Parse()
+
+	// Apply flag overrides to environment before logger setup
+	if *verbose {
+		os.Setenv("LOG_LEVEL", "debug")
+	}
+	if *quiet {
+		os.Setenv("LOG_LEVEL", "quiet")
+	}
+	if *virtual {
+		os.Setenv("KTUN_USE_VIRTUAL", "true")
+	}
+	if *virtualIP != "" {
+		os.Setenv("KTUN_VIRTUAL_IP", *virtualIP)
+	}
+	if !*healthCheck {
+		os.Setenv("KTUN_HEALTH_ENABLED", "false")
+	}
+	if *dnsIP != "127.0.0.1" {
+		os.Setenv("KTUN_DNS_IP", *dnsIP)
+	}
+	if *maxRetries != 2 {
+		os.Setenv("KTUN_RETRY_MAX", strconv.Itoa(*maxRetries))
+	}
+
 	logger.Setup()
 	if *help {
 		flag.Usage()
@@ -42,6 +77,12 @@ func main() {
 
 	server := createServer(*port, conf, mux)
 	go startServer(server, *port, container)
+
+	// Start enhanced port manager if available
+	if err := container.StartPortManager(*port); err != nil {
+		logger.LogError("Failed to start enhanced port manager", err)
+		// Continue without failing - basic functionality will still work
+	}
 
 	<-sigChan
 	shutdownServer(server, container)
@@ -76,25 +117,14 @@ func createServer(port int, conf *config.Config, mux http.Handler) *http.Server 
 	return server
 }
 
-// startServer starts the server and logs startup information.
+// startServer starts the server and logs essential startup information.
 func startServer(server *http.Server, port int, container *app.Container) {
 	displayHost := "localhost"
 	url := "http://" + displayHost + ":" + strconv.Itoa(port)
 
 	logger.Log.Infof("🌐 Proxy server running at %s", url)
 	logger.Log.Infof("🔗 Port forwards using IP: %s", container.Cache.GetPortForwardIP())
-
-	if displayHost != "127.0.0.1" {
-		logger.Log.Infof(
-			"💡 Test: curl http://my-service.default.svc.cluster.local:%d/health",
-			port,
-		)
-		logger.Log.Infof("💡 Or directly: curl %s/health", url)
-	} else {
-		logger.Log.Infof("💡 Test: curl http://my-service.default.svc.cluster.local:%d/health", port)
-	}
-	logger.Log.Infof("📊 Health monitoring: %s/health/status", url)
-	logger.Log.Infof("📈 Health metrics: %s/health/metrics", url)
+	logger.Log.Infof("📱 Dashboard: %s/dashboard", url)
 	logger.Log.Infof("🚀 Server listening on %s (HTTP/1.1, h2c, h2 with TLS, gRPC)", server.Addr)
 	logger.Log.Info("✅ Ready to proxy requests to *.svc.cluster.local services")
 
@@ -123,14 +153,26 @@ func printUsageExamples() {
 	examples := `
 Examples:
 
-  # Start proxy server on port 80
+  # Start proxy server on default port 80
   ./kube-tunnel
 
-  # Start on custom port
-  ./kube-tunnel -port=8080
+  # Start on custom port with debug logging
+  ./kube-tunnel -port=8080 -verbose
 
-  # Enable debug logging
-  LOG_LEVEL=debug ./kube-tunnel
+  # Enable virtual interface mode
+  ./kube-tunnel -virtual -virtual-ip=10.8.0.1
+
+  # Disable health monitoring for development
+  ./kube-tunnel -health=false -verbose
+
+  # Custom DNS configuration
+  ./kube-tunnel -dns-ip=127.0.0.1 -max-retries=3
+
+  # Full configuration example
+  ./kube-tunnel -port=8080 -virtual -virtual-ip=192.168.1.100 -verbose
+
+Environment variables (KTUN_* prefix) take precedence over flags.
+See ENV_VARS.md for complete configuration options.
 
 After starting, you can make requests like:
   curl http://my-service.default.svc.cluster.local/health

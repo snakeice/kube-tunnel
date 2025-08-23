@@ -17,15 +17,6 @@ import (
 	"github.com/snakeice/kube-tunnel/internal/logger"
 )
 
-func StartPortForward(
-	ctx context.Context,
-	config *rest.Config,
-	namespace, pod string,
-	localPort, remotePort int,
-) error {
-	return StartPortForwardOnIP(ctx, config, namespace, pod, "127.0.0.1", localPort, remotePort)
-}
-
 func StartPortForwardOnIP(
 	ctx context.Context,
 	config *rest.Config,

@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <link rel="stylesheet" href="/dashboard/assets/dashboard.css">
+</head>
+<body>
+    <div class="header">
+        <h1>🚀 {{.Title}}</h1>
+        <p>Real-time health monitoring and metrics</p>
+    </div>
+
+    <div class="status-bar">
+        <div class="status-card neutral" id="monitor-status">
+            <h3>Monitor Status</h3>
+            <div class="value" id="monitor-value">-</div>
+        </div>
+        <div class="status-card neutral" id="total-services">
+            <h3>Total Services</h3>
+            <div class="value" id="total-value">-</div>
+        </div>
+        <div class="status-card healthy" id="healthy-services">
+            <h3>Healthy</h3>
+            <div class="value" id="healthy-value">-</div>
+        </div>
+        <div class="status-card unhealthy" id="unhealthy-services">
+            <h3>Unhealthy</h3>
+            <div class="value" id="unhealthy-value">-</div>
+        </div>
+        <div class="status-card neutral" id="health-check-status">
+            <h3>Health Checks</h3>
+            <div class="value">-</div>
+        </div>
+    </div>
+
+    <div class="dashboard-grid">
+        <div class="chart-container">
+            <h3>📊 Service Health Overview</h3>
+            <div class="chart" id="health-chart">
+                <div class="service-list" id="service-list">
+                    <div style="text-align: center; padding: 20px; opacity: 0.7;">
+                        Loading services...
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <h3>⚡ Service Performance</h3>
+            <div class="chart" id="performance-chart">
+                <div id="performance-metrics">
+                    <div style="text-align: center; padding: 20px; opacity: 0.7;">
+                        Loading performance data...
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <h3>📈 Health Check Volume</h3>
+            <div class="chart" id="volume-chart">
+                <div id="volume-metrics">
+                    <div style="text-align: center; padding: 20px; opacity: 0.7;">
+                        Loading check volume...
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <h3>🔧 Configuration</h3>
+            <div class="chart" id="config-chart">
+                <div id="config-metrics">
+                    <div style="text-align: center; padding: 20px; opacity: 0.7;">
+                        Loading configuration...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="refresh-info">
+        <span id="last-update">Last update: Never</span> |
+        Auto-refresh every <span id="refresh-interval">5</span> seconds
+    </div>
+
+    <script src="/dashboard/assets/dashboard.js"></script>
+</body>
+</html>

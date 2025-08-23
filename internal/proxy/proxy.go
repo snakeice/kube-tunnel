@@ -9,8 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -119,24 +117,10 @@ func createTransport(
 	return transport
 }
 
-// getRetryConfig returns retry configuration from environment variables.
+// getRetryConfig returns retry configuration from the centralized config.
 func getRetryConfig() (int, time.Duration) {
-	maxRetries := 2
-	baseDelay := 100 * time.Millisecond
-
-	if envRetries := os.Getenv("PROXY_MAX_RETRIES"); envRetries != "" {
-		if parsed, err := strconv.Atoi(envRetries); err == nil && parsed >= 0 && parsed <= 10 {
-			maxRetries = parsed
-		}
-	}
-
-	if envDelay := os.Getenv("PROXY_RETRY_DELAY_MS"); envDelay != "" {
-		if parsed, err := strconv.Atoi(envDelay); err == nil && parsed >= 25 && parsed <= 2000 {
-			baseDelay = time.Duration(parsed) * time.Millisecond
-		}
-	}
-
-	return maxRetries, baseDelay
+	cfg := config.GetConfig()
+	return cfg.Proxy.MaxRetries, cfg.Proxy.RetryDelay
 }
 
 // minDuration returns the smaller of two time.Duration values.
@@ -157,14 +141,11 @@ type retryableTransport struct {
 
 func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var lastErr error
-	requestStartTime := time.Now()
 
 	// Log initial attempt
 	logger.LogRetryAttempt(0, rt.maxRetries, req.Method, req.URL.Path, rt.isGRPC)
 
 	for attempt := 0; attempt <= rt.maxRetries; attempt++ {
-		attemptStartTime := time.Now()
-		// Check if context is canceled before each attempt
 		select {
 		case <-req.Context().Done():
 			logger.LogConnectionCanceled(req.Method, req.URL.Path, attempt)
@@ -181,15 +162,10 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		}
 
 		resp, err := rt.base.RoundTrip(reqClone)
-		attemptDuration := time.Since(attemptStartTime)
 
 		if err == nil {
 			if attempt > 0 {
-				logger.LogRetrySuccessWithTiming(
-					attempt,
-					attemptDuration,
-					time.Since(requestStartTime),
-				)
+				logger.LogRetrySuccess(attempt)
 			}
 			return resp, nil
 		}
@@ -210,7 +186,7 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 				// Cap at 1 second instead of 5
 				1*time.Second)
 
-			logger.LogRetryWithTiming(attempt+1, delay.String(), err, attemptDuration)
+			logger.LogRetry(attempt+1, delay.String(), err)
 
 			// Use context-aware sleep to allow cancellation
 			select {
@@ -223,8 +199,7 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		}
 	}
 
-	totalDuration := time.Since(requestStartTime)
-	logger.LogRetryFailedWithTiming(rt.maxRetries+1, lastErr, totalDuration)
+	logger.LogRetryFailed(rt.maxRetries+1, lastErr)
 	return nil, lastErr
 }
 
@@ -252,29 +227,6 @@ func isRetryableError(err error) bool {
 		strings.Contains(errStr, "http2: client connection lost") ||
 		strings.Contains(errStr, "stream error") ||
 		strings.Contains(errStr, "HTTP/1.x transport connection broken")
-}
-
-func healthCheckBackendOnIP(ip string, port int, timeout time.Duration) error {
-	client := &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			DisableKeepAlives: true,
-		},
-	}
-
-	// Try a simple HEAD request to check if the service is responding
-	resp, err := client.Head("http://" + net.JoinHostPort(ip, strconv.Itoa(port)) + "/")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			logger.LogError("Failed to close response body", err)
-		}
-	}()
-
-	// Accept any HTTP response (even 404) as long as something is responding
-	return nil
 }
 
 // protocolFallbackTransport tries different protocols on failure.
@@ -405,10 +357,6 @@ func parseAndValidateHost(
 	}
 	return service, namespace, nil
 }
-
-// setupPortForward ensures a port-forward is established for the service.
-// It writes an error response if the port-forward fails.
-// setupPortForward and checkBackendHealth now live on the Proxy struct (handler.go).
 
 // setGRPCHeaders sets the necessary headers for a gRPC request.
 func setGRPCHeaders(req *http.Request) {

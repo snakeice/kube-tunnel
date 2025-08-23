@@ -61,11 +61,6 @@ archives:
     files:
       - README.md
       - LICENSE
-      - CHANGELOG.md
-      - PERFORMANCE.md
-      - QUICKSTART_PERFORMANCE.md
-      - scripts/perf-test.sh
-      - scripts/health-demo.sh
 
 changelog:
   sort: asc

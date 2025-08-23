@@ -32,6 +32,8 @@ func Setup() {
 		Log.SetLevel(logrus.WarnLevel)
 	case "error":
 		Log.SetLevel(logrus.ErrorLevel)
+	case "quiet":
+		Log.SetLevel(logrus.ErrorLevel) // Only show errors in quiet mode
 	default:
 		Log.SetLevel(logrus.InfoLevel)
 	}
@@ -151,12 +153,13 @@ func LogStartup(message string) {
 }
 
 func LogRequest(method, path, protocol, remoteAddr string) {
+	// Only log at debug level to reduce noise during normal operation
 	Log.WithFields(logrus.Fields{
 		"method":   method,
 		"path":     path,
 		"protocol": protocol,
 		"client":   remoteAddr,
-	}).Info("📨 Incoming request")
+	}).Debug("📨 Incoming request")
 }
 
 func LogRouting(service, namespace string) {
@@ -213,14 +216,10 @@ func LogPortForwardExpire(key string) {
 	}).Info("⏰ Expiring idle port-forward")
 }
 
-func LogProtocolDetection(target, protocol string) {
-	Log.WithFields(logrus.Fields{
-		"target":   target,
-		"protocol": protocol,
-	}).Debug("🔍 Detected backend protocol")
-}
+// Remove LogProtocolDetection - this is too verbose for normal operation
 
 func LogProxy(method, path, sourceProto, targetProto string, isGRPC bool) {
+	// Only log proxy operations at debug level to reduce noise
 	var icon string
 	if isGRPC {
 		icon = "🚀"
@@ -234,7 +233,7 @@ func LogProxy(method, path, sourceProto, targetProto string, isGRPC bool) {
 		"source_proto": sourceProto,
 		"target_proto": targetProto,
 		"grpc":         isGRPC,
-	}).Info(icon + " Proxying request")
+	}).Debug(icon + " Proxying request")
 }
 
 func LogProxyError(method, path string, err error) {
@@ -245,11 +244,7 @@ func LogProxyError(method, path string, err error) {
 	}).Error("💥 Proxy error")
 }
 
-func LogHealthCheck(protocol string) {
-	Log.WithFields(logrus.Fields{
-		"protocol": protocol,
-	}).Debug("❤️  Health check")
-}
+// Remove LogHealthCheck - health checks should be silent unless there's an issue
 
 func LogError(message string, err error) {
 	Log.WithFields(logrus.Fields{
@@ -275,10 +270,10 @@ func LogResponseMetrics(
 	switch {
 	case statusCode >= 200 && statusCode < 300:
 		emoji = "✅"
-		level = logrus.InfoLevel
+		level = logrus.DebugLevel // Successful responses at debug level
 	case statusCode >= 300 && statusCode < 400:
 		emoji = "↗️ "
-		level = logrus.InfoLevel
+		level = logrus.DebugLevel // Redirects at debug level
 	case statusCode >= 400 && statusCode < 500:
 		emoji = "⚠️ "
 		level = logrus.WarnLevel
@@ -287,7 +282,7 @@ func LogResponseMetrics(
 		level = logrus.ErrorLevel
 	default:
 		emoji = "❓"
-		level = logrus.InfoLevel
+		level = logrus.DebugLevel
 	}
 
 	fields := logrus.Fields{
@@ -299,23 +294,26 @@ func LogResponseMetrics(
 		"grpc":          isGRPC,
 	}
 
-	// Add performance indicators
+	// Add performance indicators only for slow requests
 	if duration > 5*time.Second {
 		fields["performance"] = "slow"
-	} else if duration < 100*time.Millisecond {
-		fields["performance"] = "fast"
+		level = logrus.WarnLevel // Log slow requests as warnings
 	}
 
-	Log.WithFields(fields).Log(level, emoji+" Response completed")
+	// Only log if it's not a successful request or if it's slow
+	if statusCode >= 400 || duration > 5*time.Second {
+		Log.WithFields(fields).Log(level, emoji+" Response completed")
+	}
 }
 
 func LogRequestStart(method, path string, isGRPC bool, requestSize int64) {
+	// Only log at debug level to reduce noise
 	Log.WithFields(logrus.Fields{
 		"method":       method,
 		"path":         path,
 		"grpc":         isGRPC,
 		"request_size": requestSize,
-	}).Info("🚀 Request started")
+	}).Debug("🚀 Request started")
 }
 
 func LogProxyMetrics(
@@ -352,14 +350,7 @@ func LogRetry(attempt int, delay string, err error) {
 	}).Warn("🔄 Retrying connection")
 }
 
-func LogRetryWithTiming(attempt int, delay string, err error, attemptDuration time.Duration) {
-	Log.WithFields(logrus.Fields{
-		"attempt":    attempt,
-		"delay":      delay,
-		"error":      err.Error(),
-		"attempt_ms": attemptDuration.Milliseconds(),
-	}).Warn("🔄 Retrying connection")
-}
+// Remove LogRetryWithTiming - consolidate into LogRetry
 
 func LogRetrySuccess(attempt int) {
 	Log.WithFields(logrus.Fields{
@@ -367,13 +358,7 @@ func LogRetrySuccess(attempt int) {
 	}).Info("✅ Connection successful after retry")
 }
 
-func LogRetrySuccessWithTiming(attempt int, attemptDuration, totalDuration time.Duration) {
-	Log.WithFields(logrus.Fields{
-		"attempt":    attempt,
-		"attempt_ms": attemptDuration.Milliseconds(),
-		"total_ms":   totalDuration.Milliseconds(),
-	}).Info("✅ Connection successful after retry")
-}
+// Remove LogRetrySuccessWithTiming - consolidate into LogRetrySuccess
 
 func LogRetryFailed(totalAttempts int, err error) {
 	Log.WithFields(logrus.Fields{
@@ -382,20 +367,9 @@ func LogRetryFailed(totalAttempts int, err error) {
 	}).Error("🔴 Connection failed after all retries")
 }
 
-func LogRetryFailedWithTiming(totalAttempts int, err error, totalDuration time.Duration) {
-	Log.WithFields(logrus.Fields{
-		"total_attempts": totalAttempts,
-		"error":          err.Error(),
-		"total_ms":       totalDuration.Milliseconds(),
-	}).Error("🔴 Connection failed after all retries")
-}
+// Remove LogRetryFailedWithTiming - consolidate into LogRetryFailed
 
-func LogBackendHealth(port int, status string) {
-	Log.WithFields(logrus.Fields{
-		"port":   port,
-		"status": status,
-	}).Debug("🏥 Backend health check")
-}
+// Remove LogBackendHealth - only log when there are actual health issues
 
 func LogConnectionCanceled(method, path string, attempt int) {
 	Log.WithFields(logrus.Fields{

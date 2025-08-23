@@ -23,6 +23,7 @@ const (
 
 type Cache interface {
 	EnsurePortForward(service, namespace string) (string, int, error)
+	EnsurePortForwardWithHint(service, namespace string, preferredPort int) (string, int, error)
 	GetPortForwardIP() string
 }
 
@@ -42,33 +43,6 @@ type PortForwardSession struct {
 	LastUsed  time.Time
 }
 
-// NewCache creates a new cache instance.
-func NewCache(m *health.Monitor, cfg *config.Config) Cache {
-	impl := &cacheImpl{
-		sessions:  make(map[string]*PortForwardSession),
-		monitor:   m,
-		config:    cfg,
-		ipManager: tools.GetIPManager(),
-	}
-
-	// Determine the IP to use for port forwards
-	if cfg.Network.PortForwardBindIP != "" {
-		impl.portForwardIP = cfg.Network.PortForwardBindIP
-		logger.Log.Infof("Using configured port forward IP: %s", impl.portForwardIP)
-	} else {
-		// Use virtual interface IP if available, otherwise localhost
-		if cfg.Network.UseVirtualInterface && cfg.Network.VirtualInterfaceIP != "" {
-			impl.portForwardIP = cfg.Network.VirtualInterfaceIP
-			logger.Log.Infof("Using virtual interface IP for port forwards: %s", impl.portForwardIP)
-		} else {
-			impl.portForwardIP = localhostIP
-			logger.Log.Info("Using localhost for port forwards: 127.0.0.1")
-		}
-	}
-
-	return impl
-}
-
 // NewCacheWithIP creates a new cache with a predefined IP for port forwards.
 func NewCacheWithIP(m *health.Monitor, cfg *config.Config, virtualIP string) Cache {
 	impl := &cacheImpl{
@@ -81,22 +55,22 @@ func NewCacheWithIP(m *health.Monitor, cfg *config.Config, virtualIP string) Cac
 	// If virtual interface IP is provided, use it directly
 	if virtualIP != "" {
 		impl.portForwardIP = virtualIP
-		logger.Log.Infof("Using virtual interface IP for port forwards: %s", impl.portForwardIP)
+		logger.Log.Debugf("Using virtual interface IP for port forwards: %s", impl.portForwardIP)
 		return impl
 	}
 
 	// Otherwise, use the same logic as NewCache
 	if cfg.Network.PortForwardBindIP != "" {
 		impl.portForwardIP = cfg.Network.PortForwardBindIP
-		logger.Log.Infof("Using configured port forward IP: %s", impl.portForwardIP)
+		logger.Log.Debugf("Using configured port forward IP: %s", impl.portForwardIP)
 	} else {
 		// Use virtual interface IP if available, otherwise localhost
 		if cfg.Network.UseVirtualInterface && cfg.Network.VirtualInterfaceIP != "" {
 			impl.portForwardIP = cfg.Network.VirtualInterfaceIP
-			logger.Log.Infof("Using virtual interface IP for port forwards: %s", impl.portForwardIP)
+			logger.Log.Debugf("Using virtual interface IP for port forwards: %s", impl.portForwardIP)
 		} else {
 			impl.portForwardIP = localhostIP
-			logger.Log.Info("Using localhost for port forwards: 127.0.0.1")
+			logger.Log.Debug("Using localhost for port forwards: 127.0.0.1")
 		}
 	}
 
@@ -110,6 +84,13 @@ func (c *cacheImpl) GetPortForwardIP() string {
 }
 
 func (c *cacheImpl) EnsurePortForward(service, namespace string) (string, int, error) {
+	return c.EnsurePortForwardWithHint(service, namespace, 0)
+}
+
+func (c *cacheImpl) EnsurePortForwardWithHint(
+	service, namespace string,
+	preferredPort int,
+) (string, int, error) {
 	startTime := time.Now()
 	key := fmt.Sprintf("%s.%s", service, namespace)
 
@@ -120,7 +101,13 @@ func (c *cacheImpl) EnsurePortForward(service, namespace string) (string, int, e
 		return ip, port, nil
 	}
 
-	localIP, localPort, cancel, err := c.setupPortForward(key, service, namespace, startTime)
+	localIP, localPort, cancel, err := c.setupPortForwardWithHint(
+		key,
+		service,
+		namespace,
+		startTime,
+		preferredPort,
+	)
 	if err != nil {
 		return "", 0, err
 	}
@@ -204,14 +191,35 @@ func (c *cacheImpl) tryReusePortForward(key, service, namespace string) (string,
 	return "", 0, false
 }
 
-func (c *cacheImpl) setupPortForward(
+func (c *cacheImpl) setupPortForwardWithHint(
 	key, service, namespace string,
 	startTime time.Time,
+	preferredPort int,
 ) (string, int, context.CancelFunc, error) {
 	localIP := c.portForwardIP
-	localPort, err := tools.GetFreePortOnIP(localIP)
-	if err != nil {
-		return "", 0, nil, fmt.Errorf("failed to get free port on IP %s: %w", localIP, err)
+	var localPort int
+	var err error
+
+	// Try to use the preferred port if specified and available
+	if preferredPort > 0 && preferredPort <= 65535 {
+		if tools.IsPortAvailableOnIP(localIP, preferredPort) {
+			localPort = preferredPort
+			logger.LogDebug("Using preferred port for port-forward", logrus.Fields{
+				"service": service, "namespace": namespace, "port": preferredPort,
+			})
+		} else {
+			logger.LogDebug("Preferred port not available, finding free port", logrus.Fields{
+				"service": service, "namespace": namespace, "preferred_port": preferredPort,
+			})
+		}
+	}
+
+	// Fallback to finding a free port if preferred port is not available
+	if localPort == 0 {
+		localPort, err = tools.GetFreePortOnIP(localIP)
+		if err != nil {
+			return "", 0, nil, fmt.Errorf("failed to get free port on IP %s: %w", localIP, err)
+		}
 	}
 	cfg, err := k8s.GetKubeConfig()
 	if err != nil {

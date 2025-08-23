@@ -16,23 +16,18 @@ import (
 )
 
 type ProxyDNS struct {
-	server      *dns.Server
-	port        int
-	quit        chan struct{}
-	running     bool
-	resolveToIP string
-	config      *config.Config
-	// Add system DNS resolver for forwarding non-cluster queries
-	systemResolver *net.Resolver
-	// Store the initial bind IP for potential rebinding
-	initialBindIP string
-	// Track the virtual interface for cleanup
+	server           *dns.Server
+	port             int
+	quit             chan struct{}
+	running          bool
+	resolveToIP      string
+	config           *config.Config
+	systemResolver   *net.Resolver
+	initialBindIP    string
 	virtualInterface *VirtualInterface
 }
 
 func NewProxyDNS(cfg *config.Config, portForwardIP string) *ProxyDNS {
-	// Always start DNS server on localhost first to avoid binding issues
-	// The virtual interface will be created separately when DNS is configured
 	dnsBindIP := "127.0.0.1"
 
 	port, err := tools.GetFreePortOnIP(dnsBindIP)
@@ -40,15 +35,13 @@ func NewProxyDNS(cfg *config.Config, portForwardIP string) *ProxyDNS {
 		log.Fatalf("Failed to get free port on localhost: %v", err)
 	}
 
-	// Resolve to the same IP where port forwards listen
 	resolveIP := portForwardIP
 	if resolveIP == "" {
 		resolveIP = "127.0.0.1"
 	}
 
-	// Create system DNS resolver for forwarding non-cluster queries
 	systemResolver := &net.Resolver{
-		PreferGo: false, // Use system's native resolver (systemd-resolved)
+		PreferGo: false,
 	}
 
 	return &ProxyDNS{
@@ -72,7 +65,6 @@ func (p *ProxyDNS) Start() error {
 
 	dns.HandleFunc(".", p.HandleRequest)
 
-	// Channel to capture DNS server startup errors
 	errChan := make(chan error, 1)
 
 	go func() {
@@ -90,7 +82,6 @@ func (p *ProxyDNS) Start() error {
 		}
 	}()
 
-	// Wait a moment to see if DNS server starts successfully
 	select {
 	case err := <-errChan:
 		if err != nil {
@@ -98,13 +89,11 @@ func (p *ProxyDNS) Start() error {
 		}
 		logger.Log.Infof("DNS server successfully started on %s", p.server.Addr)
 	case <-time.After(1 * time.Second):
-		// Assume it started successfully if no error in 1 second
 		logger.Log.Infof("DNS server appears to be running on %s", p.server.Addr)
 	}
 
 	p.running = true
 
-	// Setup DNS configuration on virtual interface
 	virtualInterface, err := SetupDNS("svc.cluster.local", p.port, p.config)
 	if err != nil {
 		if stopErr := p.Stop(); stopErr != nil {
@@ -113,7 +102,6 @@ func (p *ProxyDNS) Start() error {
 		return fmt.Errorf("failed to setup DNS: %w", err)
 	}
 
-	// Store the virtual interface reference for cleanup
 	p.virtualInterface = virtualInterface
 
 	return nil
@@ -129,18 +117,15 @@ func (p *ProxyDNS) RebindToVirtualInterface(virtualInterfaceIP string) error {
 		return errors.New("virtual interface IP is required")
 	}
 
-	// Stop the current server
 	if err := p.server.Shutdown(); err != nil {
 		return fmt.Errorf("failed to shutdown current DNS server: %w", err)
 	}
 
-	// Create new server bound to virtual interface IP
 	newServer := &dns.Server{
 		Addr: fmt.Sprintf("%s:%d", virtualInterfaceIP, p.port),
 		Net:  "udp",
 	}
 
-	// Start the new server
 	errChan := make(chan error, 1)
 	go func() {
 		logger.Log.Infof(
@@ -157,11 +142,9 @@ func (p *ProxyDNS) RebindToVirtualInterface(virtualInterfaceIP string) error {
 		}
 	}()
 
-	// Wait a moment to see if the new server starts successfully
 	select {
 	case err := <-errChan:
 		if err != nil {
-			// If rebinding fails, try to restart on the original IP
 			logger.Log.Warnf(
 				"Failed to rebind to virtual interface, falling back to %s: %v",
 				p.initialBindIP,
@@ -175,7 +158,6 @@ func (p *ProxyDNS) RebindToVirtualInterface(virtualInterfaceIP string) error {
 			p.port,
 		)
 	case <-time.After(1 * time.Second):
-		// Assume it started successfully if no error in 1 second
 		logger.Log.Infof(
 			"DNS server appears to be running on virtual interface %s:%d",
 			virtualInterfaceIP,
@@ -183,25 +165,21 @@ func (p *ProxyDNS) RebindToVirtualInterface(virtualInterfaceIP string) error {
 		)
 	}
 
-	// Update the server reference
 	p.server = newServer
 	return nil
 }
 
 // fallbackToOriginalIP restarts the DNS server on the original bind IP.
 func (p *ProxyDNS) fallbackToOriginalIP() error {
-	// Stop the current server
 	if err := p.server.Shutdown(); err != nil {
 		logger.Log.Warnf("Failed to shutdown server during fallback: %v", err)
 	}
 
-	// Create new server bound to original IP
 	newServer := &dns.Server{
 		Addr: fmt.Sprintf("%s:%d", p.initialBindIP, p.port),
 		Net:  "udp",
 	}
 
-	// Start the new server
 	errChan := make(chan error, 1)
 	go func() {
 		logger.Log.Infof("DNS server falling back to %s:%d", p.initialBindIP, p.port)
@@ -214,7 +192,6 @@ func (p *ProxyDNS) fallbackToOriginalIP() error {
 		}
 	}()
 
-	// Wait a moment to see if the fallback server starts successfully
 	select {
 	case err := <-errChan:
 		if err != nil {
@@ -222,7 +199,6 @@ func (p *ProxyDNS) fallbackToOriginalIP() error {
 		}
 		logger.Log.Infof("DNS server successfully fell back to %s:%d", p.initialBindIP, p.port)
 	case <-time.After(1 * time.Second):
-		// Assume it started successfully if no error in 1 second
 		logger.Log.Infof(
 			"DNS server appears to be running on fallback IP %s:%d",
 			p.initialBindIP,
@@ -230,7 +206,6 @@ func (p *ProxyDNS) fallbackToOriginalIP() error {
 		)
 	}
 
-	// Update the server reference
 	p.server = newServer
 	return nil
 }
@@ -242,7 +217,6 @@ func (p *ProxyDNS) Stop() error {
 	close(p.quit)
 	p.running = false
 
-	// Clean up virtual interface if it was created
 	if p.virtualInterface != nil {
 		logger.Log.Info("Cleaning up virtual interface...")
 		if err := p.virtualInterface.Cleanup(); err != nil {
@@ -253,7 +227,6 @@ func (p *ProxyDNS) Stop() error {
 		p.virtualInterface = nil
 	}
 
-	// Revert DNS configuration
 	if err := RevertDNS(); err != nil {
 		return fmt.Errorf("failed to revert DNS: %w", err)
 	}
@@ -280,10 +253,8 @@ func (p *ProxyDNS) HandleRequest(w dns.ResponseWriter, r *dns.Msg) {
 		case dns.TypeAAAA:
 			p.HandleDNSQueryAAAA(q, m, r)
 		case dns.TypeCNAME, dns.TypeMX, dns.TypeTXT, dns.TypeSRV, dns.TypeNS:
-			// Forward common query types to system DNS
 			p.forwardToSystemDNS(q, m, r)
 		default:
-			// For other query types, try to forward to system DNS
 			p.forwardToSystemDNS(q, m, r)
 		}
 	}
@@ -297,7 +268,6 @@ func (p *ProxyDNS) HandleDNSQueryA(q dns.Question, m *dns.Msg, r *dns.Msg) {
 	name := strings.ToLower(q.Name)
 
 	if strings.HasSuffix(name, ".svc.cluster.local.") {
-		// Handle cluster service queries locally
 		rr, err := dns.NewRR(fmt.Sprintf("%s 60 IN A %s", name, p.resolveToIP))
 		if err != nil {
 			logger.Log.Warn("Failed to create DNS A record:", err.Error())
@@ -306,7 +276,6 @@ func (p *ProxyDNS) HandleDNSQueryA(q dns.Question, m *dns.Msg, r *dns.Msg) {
 			logger.Log.Debugf("DNS resolved %s to %s", name, p.resolveToIP)
 		}
 	} else {
-		// Forward non-cluster queries to system DNS
 		p.forwardToSystemDNS(q, m, r)
 	}
 }
@@ -315,10 +284,8 @@ func (p *ProxyDNS) HandleDNSQueryAAAA(q dns.Question, m *dns.Msg, r *dns.Msg) {
 	name := strings.ToLower(q.Name)
 
 	if strings.HasSuffix(name, ".svc.cluster.local.") {
-		// For cluster service queries, return empty response (no IPv6)
 		logger.Log.Debugf("DNS AAAA query for cluster service %s - no IPv6 support", name)
 	} else {
-		// Forward non-cluster queries to system DNS
 		p.forwardToSystemDNS(q, m, r)
 	}
 }
@@ -329,16 +296,13 @@ func (p *ProxyDNS) forwardToSystemDNS(q dns.Question, m *dns.Msg, _ *dns.Msg) {
 
 	logger.Log.Debugf("Forwarding DNS query %s to system resolver", name)
 
-	// Use the system resolver to get the answer
 	ips, err := p.resolveIPs(q.Qtype, name)
 	if err != nil {
 		logger.Log.Debugf("System DNS resolution failed for %s: %v", name, err)
-		// Set NXDOMAIN response
 		m.Rcode = dns.RcodeNameError
 		return
 	}
 
-	// Add the resolved IPs to the answer
 	p.addResolvedIPs(q, m, ips, name)
 
 	if len(m.Answer) > 0 {
@@ -356,7 +320,6 @@ func (p *ProxyDNS) resolveIPs(qtype uint16, name string) ([]net.IP, error) {
 	case dns.TypeAAAA:
 		return p.systemResolver.LookupIP(context.Background(), "ip6", name)
 	default:
-		// For other query types, try to get any IP
 		return p.systemResolver.LookupIP(context.Background(), "ip", name)
 	}
 }
@@ -391,7 +354,7 @@ func (p *ProxyDNS) addIPRecord(q dns.Question, m *dns.Msg, ip net.IP, name strin
 	case dns.TypeAAAA:
 		recordType = "AAAA"
 	default:
-		recordType = "A" // Default to A record for other types
+		recordType = "A"
 	}
 
 	rr, err := dns.NewRR(fmt.Sprintf("%s 60 IN %s %s", q.Name, recordType, ip.String()))

@@ -1,0 +1,72 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+  - job_name: 'kube-tunnel'
+
+    # metrics_path defaults to '/metrics'
+    # scheme defaults to 'http'.
+
+    static_configs:
+      - targets: ['localhost:80']
+        labels:
+          service: 'kube-tunnel'
+          environment: 'production'
+          instance: 'kube-tunnel-main'
+
+    # Scrape interval for this job
+    scrape_interval: 10s
+
+    # Timeout after which the scrape is ended
+    scrape_timeout: 5s
+
+    # Optional HTTP URL parameters
+    params:
+      # 'match[]' parameter for the /federate endpoint
+      # 'match[]': '{job="kube-tunnel"}'
+
+    # Optional HTTP headers
+    # headers:
+    #   - 'X-Custom-Header': 'custom-value'
+
+    # Optional relabeling of target labels
+    # relabel_configs:
+    #   - source_labels: [__address__]
+    #     target_label: instance
+    #     regex: '([^:]+)(?::\d+)?'
+    #     replacement: '${1}'
+
+  # Example job for Kubernetes service discovery (uncomment if using k8s)
+  # - job_name: 'kubernetes-service-endpoints'
+  #   kubernetes_sd_configs:
+  #     - role: endpoints
+  #   relabel_configs:
+  #     - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+  #       action: keep
+  #       regex: true
+  #     - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+  #       action: replace
+  #       target_label: __metrics_path__
+  #       regex: (.+)
+  #     - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+  #       action: replace
+  #       regex: ([^:]+)(?::\d+)?;(\d+)
+  #       replacement: $1:$2
+  #       target_label: __address__
+  #     - action: labelmap
+  #       regex: __meta_kubernetes_service_label_(.+)
+  #     - source_labels: [__meta_kubernetes_namespace]
+  #       action: replace
+  #       target_label: kubernetes_namespace
+  #     - source_labels: [__meta_kubernetes_service_name]
+  #       action: replace
+  #       target_label: kubernetes_service_name
+  #     - source_labels: [__meta_kubernetes_pod_name]
+  #       action: replace
+  #       target_label: kubernetes_pod_name

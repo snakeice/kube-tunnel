@@ -4,15 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 
 	"github.com/snakeice/kube-tunnel/internal/cache"
 	"github.com/snakeice/kube-tunnel/internal/config"
 	"github.com/snakeice/kube-tunnel/internal/health"
 	"github.com/snakeice/kube-tunnel/internal/logger"
+	"github.com/snakeice/kube-tunnel/internal/metrics"
 )
 
 // Proxy encapsulates dependencies required to handle proxy and health endpoints.
@@ -41,7 +46,6 @@ func (p *Proxy) HandleProxy(w http.ResponseWriter, r *http.Request) {
 
 	requestSize := max(r.ContentLength, 0)
 	logger.LogRequest(r.Method, r.URL.Path, protocolInfo, r.RemoteAddr)
-	logger.LogRequestStart(r.Method, r.URL.Path, isGRPC, requestSize)
 
 	if handleCORS(w, r) {
 		return
@@ -52,27 +56,99 @@ func (p *Proxy) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	localIP, localPort, err := p.cache.EnsurePortForward(service, namespace)
+	localIP, localPort, err := p.setupPortForward(service, namespace, r)
 	if err != nil {
-		logger.LogError(fmt.Sprintf("Port-forward failed for %s.%s", service, namespace), err)
-		if isGRPC {
-			w.Header().Set("Content-Type", "application/grpc")
-			w.Header().Set("Grpc-Status", "14")
-			w.Header().Set("Grpc-Message", "Service Unavailable")
-			w.WriteHeader(http.StatusOK)
-		} else {
-			http.Error(w, "Error creating port-forward", http.StatusInternalServerError)
-		}
+		p.handlePortForwardError(w, service, namespace, isGRPC, err)
 		return
+	}
+
+	p.checkBackendHealth(service, namespace, localIP, localPort)
+
+	responseWriter := &responseWriterWrapper{ResponseWriter: w, statusCode: 200}
+	p.executeProxy(
+		responseWriter, r, service, namespace,
+		localIP, localPort, isGRPC, startTime, requestSize,
+	)
+}
+
+// setupPortForward handles the port forwarding setup logic.
+func (p *Proxy) setupPortForward(service, namespace string, r *http.Request) (string, int, error) {
+	originalPort := extractOriginalPort(r)
+
+	var localIP string
+	var localPort int
+	var err error
+
+	// Try to use the same port for Kubernetes port-forwarding if available
+	if originalPort > 0 {
+		logger.LogDebug(
+			"Attempting port-forward with port hint",
+			logrus.Fields{
+				"service":   service,
+				"namespace": namespace,
+				"hint_port": originalPort,
+			},
+		)
+		localIP, localPort, err = p.cache.EnsurePortForwardWithHint(
+			service,
+			namespace,
+			originalPort,
+		)
+	} else {
+		localIP, localPort, err = p.cache.EnsurePortForward(service, namespace)
+	}
+
+	if err != nil {
+		return "", 0, err
+	}
+
+	// Log port mapping information
+	if originalPort > 0 {
+		logger.LogDebug(
+			"Port mapping result",
+			logrus.Fields{
+				"service":        service,
+				"namespace":      namespace,
+				"requested_port": originalPort,
+				"allocated_port": localPort,
+				"port_matched":   originalPort == localPort,
+				"local_ip":       localIP,
+			},
+		)
 	}
 	logger.LogDebug(
 		"Port-forward ready",
 		logrus.Fields{"service": service, "namespace": namespace, "ip": localIP, "port": localPort},
 	)
 
-	p.checkBackendHealth(service, namespace, localIP, localPort)
+	return localIP, localPort, nil
+}
 
-	responseWriter := &responseWriterWrapper{ResponseWriter: w, statusCode: 200}
+// handlePortForwardError handles port forward errors.
+func (p *Proxy) handlePortForwardError(
+	w http.ResponseWriter, service, namespace string, isGRPC bool, err error,
+) {
+	logger.LogError(fmt.Sprintf("Port-forward failed for %s.%s", service, namespace), err)
+	if isGRPC {
+		w.Header().Set("Content-Type", "application/grpc")
+		w.Header().Set("Grpc-Status", "14")
+		w.Header().Set("Grpc-Message", "Service Unavailable")
+		w.WriteHeader(http.StatusOK)
+	} else {
+		http.Error(w, "Error creating port-forward", http.StatusInternalServerError)
+	}
+}
+
+// executeProxy executes the actual proxy request and records metrics.
+func (p *Proxy) executeProxy(
+	responseWriter *responseWriterWrapper,
+	r *http.Request,
+	service, namespace, localIP string,
+	localPort int,
+	isGRPC bool,
+	startTime time.Time,
+	requestSize int64,
+) {
 	rp := createReverseProxy(localIP, localPort, isGRPC, responseWriter)
 	logger.LogDebug(
 		"Proxying with protocol fallback",
@@ -89,6 +165,53 @@ func (p *Proxy) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	rp.ServeHTTP(responseWriter, r)
 	proxyDuration := time.Since(proxyStartTime)
 	totalDuration := time.Since(startTime)
+
+	p.recordMetrics(
+		responseWriter,
+		r,
+		service,
+		namespace,
+		isGRPC,
+		totalDuration,
+		requestSize,
+		localPort,
+		proxyDuration,
+	)
+}
+
+// recordMetrics records health and performance metrics.
+func (p *Proxy) recordMetrics(
+	responseWriter *responseWriterWrapper,
+	r *http.Request,
+	service, namespace string,
+	isGRPC bool,
+	totalDuration time.Duration,
+	requestSize int64,
+	localPort int,
+	proxyDuration time.Duration,
+) {
+	// Store real request response time in health monitor for dashboard display
+	if p.health != nil && p.cache != nil {
+		serviceKey := fmt.Sprintf("%s.%s", service, namespace)
+		p.health.UpdateServicePerformance(
+			serviceKey,
+			totalDuration,
+			responseWriter.statusCode < 400,
+		)
+	}
+
+	// Record real request metrics
+	if p.cache != nil {
+		metrics.RecordRequestMetrics(
+			service,
+			namespace,
+			r.Method,
+			responseWriter.statusCode,
+			totalDuration,
+			requestSize,
+			responseWriter.responseSize,
+		)
+	}
 
 	logger.LogProxyMetrics(
 		service,
@@ -107,25 +230,60 @@ func (p *Proxy) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
-func (p *Proxy) checkBackendHealth(service, namespace string, localIP string, localPort int) {
-	if p.health == nil {
+// 3. Standard ports based on scheme.
+func extractOriginalPort(r *http.Request) int {
+	// Check X-Forwarded-Port header first (set by our port manager)
+	if forwardedPort := r.Header.Get("X-Forwarded-Port"); forwardedPort != "" {
+		if port, err := strconv.Atoi(forwardedPort); err == nil && port > 0 && port <= 65535 {
+			return port
+		}
+	}
+
+	// Check the Host header for port information
+	host := r.Host
+	if strings.Contains(host, ":") {
+		parts := strings.Split(host, ":")
+		if len(parts) == 2 {
+			if port, err := strconv.Atoi(parts[1]); err == nil && port > 0 && port <= 65535 {
+				return port
+			}
+		}
+	}
+
+	// If no explicit port, try to infer from scheme or use common defaults
+	// This is useful when traffic comes through iptables redirects
+	if r.TLS != nil {
+		return 443 // HTTPS default
+	}
+	return 80 // HTTP default
+}
+
+// checkBackendHealth - only log actual health issues.
+func (p *Proxy) checkBackendHealth(service, namespace, localIP string, localPort int) {
+	if !p.cfg.Health.Enabled {
 		return
 	}
-	serviceKey := fmt.Sprintf("%s.%s", service, namespace)
-	status := p.health.IsHealthy(serviceKey)
-	if status == nil {
+
+	// Perform basic TCP health check
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", localIP, localPort), 3*time.Second)
+	if err != nil {
+		logger.Log.WithFields(logrus.Fields{
+			"service":   service,
+			"namespace": namespace,
+			"port":      localPort,
+			"error":     err.Error(),
+		}).Warn("🏥 Backend health check failed")
 		return
 	}
-	if status.IsHealthy {
-		return
-	}
-	if p.cfg != nil && p.cfg.Performance.SkipHealthCheck {
-		return
-	}
-	if err := healthCheckBackendOnIP(localIP, localPort, 500*time.Millisecond); err != nil {
-		logger.LogBackendHealth(localPort, "unhealthy")
-	} else {
-		logger.LogBackendHealth(localPort, "healthy")
+
+	err = conn.Close()
+	if err != nil {
+		logger.Log.WithFields(logrus.Fields{
+			"service":   service,
+			"namespace": namespace,
+			"port":      localPort,
+			"error":     err.Error(),
+		}).Warn("🏥 Backend health check failed")
 	}
 }
 
@@ -147,6 +305,12 @@ func (p *Proxy) HandleHealthMetrics(w http.ResponseWriter, r *http.Request) {
 	p.healthMetricsHandler(w, r)
 }
 
+// HandlePrometheusMetrics serves Prometheus metrics.
+func (p *Proxy) HandlePrometheusMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	promhttp.Handler().ServeHTTP(w, r)
+}
+
 func (p *Proxy) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	protocolInfo := getProtocolInfo(r)
 	resp := map[string]any{
@@ -160,7 +324,6 @@ func (p *Proxy) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		logger.LogError("Failed to encode health check", err)
 	}
-	logger.LogHealthCheck(protocolInfo)
 }
 
 func (p *Proxy) healthStatusHandler(w http.ResponseWriter, r *http.Request) {
@@ -214,27 +377,13 @@ func (p *Proxy) healthMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	total := len(all)
 	healthyCount := 0
-	var totalRT, maxRT time.Duration
-	minRT := time.Hour
+
 	for _, s := range all {
 		if s.IsHealthy {
 			healthyCount++
 		}
-		totalRT += s.ResponseTime
-		if s.ResponseTime > maxRT {
-			maxRT = s.ResponseTime
-		}
-		if s.ResponseTime > 0 && s.ResponseTime < minRT {
-			minRT = s.ResponseTime
-		}
 	}
-	if minRT == time.Hour {
-		minRT = 0
-	}
-	var avgRT time.Duration
-	if total > 0 {
-		avgRT = totalRT / time.Duration(total)
-	}
+
 	resp := map[string]any{
 		"status":             "ok",
 		"protocol":           protocolInfo,
@@ -243,10 +392,12 @@ func (p *Proxy) healthMetricsHandler(w http.ResponseWriter, r *http.Request) {
 		"healthy_services":   healthyCount,
 		"unhealthy_services": total - healthyCount,
 		"health_ratio":       fmt.Sprintf("%.2f", float64(healthyCount)/float64(max(total, 1))),
-		"response_times": map[string]any{
-			"average_ms": avgRT.Milliseconds(),
-			"min_ms":     minRT.Milliseconds(),
-			"max_ms":     maxRT.Milliseconds(),
+		"service_performance": map[string]any{
+			"total_services":  total,
+			"healthy_count":   healthyCount,
+			"unhealthy_count": total - healthyCount,
+			"note":            "Individual service performance details available at /health/status",
+			"status_endpoint": "/health/status",
 		},
 		"configuration": map[string]any{
 			"check_interval": p.cfg.Health.CheckInterval.String(),

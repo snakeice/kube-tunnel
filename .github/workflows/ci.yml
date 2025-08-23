@@ -11,8 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Keep this in sync with go.mod 'toolchain' (currently go1.24.5) / 'go' directive
-  GO_VERSION: "1.24"
+  GO_VERSION: "1.25"
 
 jobs:
   test:

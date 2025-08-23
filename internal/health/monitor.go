@@ -1,16 +1,16 @@
 package health
 
 import (
-	"errors"
 	"fmt"
 	"net"
-	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/snakeice/kube-tunnel/internal/config"
 	"github.com/snakeice/kube-tunnel/internal/logger"
+	"github.com/snakeice/kube-tunnel/internal/metrics"
 )
 
 // Status represents the health state of a backend service.
@@ -22,6 +22,8 @@ type Status struct {
 	ResponseTime time.Duration
 	ErrorMessage string
 	Port         int
+	// Track whether response time comes from real requests or health checks
+	ResponseTimeSource string // "real_request" or "health_check"
 }
 
 // Monitor manages background health checks for all active services.
@@ -61,6 +63,14 @@ func (hm *Monitor) Start() {
 		"max_failures": hm.maxFailures,
 	})
 
+	// Update configuration metrics
+	metrics.UpdateHealthConfig(
+		hm.checkInterval.Seconds(),
+		hm.timeout.Seconds(),
+		hm.maxFailures,
+		hm.enabled,
+	)
+
 	hm.wg.Add(1)
 	go hm.monitorLoop()
 }
@@ -84,13 +94,18 @@ func (hm *Monitor) RegisterService(serviceKey string, port int) {
 
 	if _, exists := hm.healthCache[serviceKey]; !exists {
 		hm.healthCache[serviceKey] = &Status{
-			IsHealthy:    true, // Assume healthy initially
-			LastChecked:  time.Now(),
-			LastHealthy:  time.Now(),
-			FailureCount: 0,
-			ResponseTime: 0,
-			Port:         port,
+			IsHealthy:          true, // Assume healthy initially
+			LastChecked:        time.Now(),
+			LastHealthy:        time.Now(),
+			FailureCount:       0,
+			ResponseTime:       0,
+			Port:               port,
+			ResponseTimeSource: "health_check", // Initial health check
 		}
+
+		// Update metrics for new service
+		metrics.UpdateHealthStatus(serviceKey, strconv.Itoa(port), true, 0)
+		hm.updateServiceCountMetrics()
 
 		logger.LogDebug("Registered service for health monitoring", logrus.Fields{
 			"service": serviceKey,
@@ -110,8 +125,13 @@ func (hm *Monitor) UnregisterService(serviceKey string) {
 	hm.cacheLock.Lock()
 	defer hm.cacheLock.Unlock()
 
-	if _, exists := hm.healthCache[serviceKey]; exists {
+	if status, exists := hm.healthCache[serviceKey]; exists {
+		// Remove metrics for this service
+		metrics.UnregisterService(serviceKey, strconv.Itoa(status.Port))
+
 		delete(hm.healthCache, serviceKey)
+		hm.updateServiceCountMetrics()
+
 		logger.LogDebug("Unregistered service from health monitoring", logrus.Fields{
 			"service": serviceKey,
 		})
@@ -224,33 +244,69 @@ func (hm *Monitor) checkServiceHealth(serviceKey string, port int) {
 	isHealthy, err := hm.performHealthCheck(port)
 	responseTime := time.Since(startTime)
 
+	// Record metrics for this health check
+	status := "success"
+	if !isHealthy {
+		status = "failure"
+	}
+	metrics.RecordHealthCheck(serviceKey, status, responseTime.Seconds())
+
+	// Log response time collection for debugging
+	if responseTime > 0 {
+		logger.LogDebug("Health check response time recorded", logrus.Fields{
+			"service":     serviceKey,
+			"port":        port,
+			"response_ms": responseTime.Milliseconds(),
+			"status":      status,
+		})
+	}
+
 	hm.cacheLock.Lock()
 	defer hm.cacheLock.Unlock()
 
-	status, exists := hm.healthCache[serviceKey]
+	statusObj, exists := hm.healthCache[serviceKey]
 	if !exists {
-		status = &Status{}
-		hm.healthCache[serviceKey] = status
+		statusObj = &Status{}
+		hm.healthCache[serviceKey] = statusObj
 	}
 
-	status.LastChecked = time.Now()
-	status.ResponseTime = responseTime
+	statusObj.LastChecked = time.Now()
+
+	// Only record response time for successful health checks
+	// Failed checks (connection refused, etc.) should not contribute to response time metrics
+	if isHealthy {
+		statusObj.ResponseTime = responseTime
+		statusObj.ResponseTimeSource = "health_check"
+	} else if statusObj.ResponseTime == 0 {
+		// For failed checks, keep the last known good response time
+		// This prevents 0ms from failed checks from skewing the metrics
+		statusObj.ResponseTime = 0 // Keep as 0 if we never had a successful check
+		// Don't update ResponseTime for failed checks
+	}
 
 	if isHealthy {
-		hm.handleHealthyService(status, serviceKey, port, responseTime)
+		hm.handleHealthyService(statusObj, serviceKey, port, responseTime)
 	} else {
-		hm.handleUnhealthyService(status, serviceKey, port, err)
+		hm.handleUnhealthyService(statusObj, serviceKey, port, err)
 	}
 
+	// Update metrics for this service
+	metrics.UpdateHealthStatus(
+		serviceKey,
+		strconv.Itoa(port),
+		statusObj.IsHealthy,
+		statusObj.FailureCount,
+	)
+
 	// Log periodic health status for debugging
-	if status.FailureCount > 0 || responseTime > 100*time.Millisecond {
+	if statusObj.FailureCount > 0 || responseTime > 100*time.Millisecond {
 		logger.LogDebug("Health check result", logrus.Fields{
 			"service":       serviceKey,
 			"port":          port,
 			"healthy":       isHealthy,
 			"response_ms":   responseTime.Milliseconds(),
-			"failure_count": status.FailureCount,
-			"error":         status.ErrorMessage,
+			"failure_count": statusObj.FailureCount,
+			"error":         statusObj.ErrorMessage,
 		})
 	}
 }
@@ -300,34 +356,50 @@ func (hm *Monitor) handleUnhealthyService(
 		}
 		status.IsHealthy = false
 	}
+
+	// Auto-cleanup services that have been consistently failing for too long
+	// This prevents zombie services from cluttering the metrics
+	maxFailureThreshold := hm.maxFailures * 3 // Allow 3x the normal failure threshold
+	if status.FailureCount >= maxFailureThreshold {
+		logger.LogDebug("Auto-removing consistently failing service", logrus.Fields{
+			"service":       serviceKey,
+			"port":          port,
+			"failure_count": status.FailureCount,
+			"max_threshold": maxFailureThreshold,
+		})
+
+		// Schedule removal in the next iteration to avoid deadlock
+		go func() {
+			time.Sleep(100 * time.Millisecond) // Small delay to avoid race conditions
+			hm.UnregisterService(serviceKey)
+		}()
+	}
 }
 
 // performHealthCheck executes the actual health check.
 func (hm *Monitor) performHealthCheck(port int) (bool, error) {
-	// Try TCP connection first (fastest)
+	// Try TCP connection first (most reliable indicator of service availability)
 	if err := hm.checkTCPConnection(port); err != nil {
 		return false, fmt.Errorf("TCP check failed: %w", err)
 	}
 
-	// Try HTTP request (more thorough)
-	if err := hm.checkHTTPEndpoint(port); err != nil {
-		// TCP works but HTTP doesn't - might be non-HTTP service
-		logger.LogDebug("HTTP check failed, but TCP is working", logrus.Fields{
-			"port":  port,
-			"error": err.Error(),
-		})
-		// Consider it healthy if TCP works (might be gRPC, database, etc.)
-		return true, nil //nolint:nilerr // Ignore HTTP error if TCP succeeded
-	}
-
+	// If TCP works, the service is considered healthy
+	// We don't require HTTP to work since many services (databases, gRPC, etc.) don't serve HTTP
+	// The fact that TCP accepts connections means the service is running and listening
 	return true, nil
 }
 
 // checkTCPConnection performs a simple TCP connection test.
 func (hm *Monitor) checkTCPConnection(port int) error {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), hm.timeout)
+	// Use a shorter timeout for health checks to avoid blocking
+	timeout := hm.timeout
+	if timeout > 2*time.Second {
+		timeout = 2 * time.Second
+	}
+
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), timeout)
 	if err != nil {
-		return err
+		return fmt.Errorf("connection refused or timeout: %w", err)
 	}
 
 	// Ensure conn.Close() error is checked
@@ -338,38 +410,90 @@ func (hm *Monitor) checkTCPConnection(port int) error {
 	return nil
 }
 
-// checkHTTPEndpoint performs an HTTP health check.
-func (hm *Monitor) checkHTTPEndpoint(port int) error {
-	client := &http.Client{
-		Timeout: hm.timeout,
-		Transport: &http.Transport{
-			DisableKeepAlives:   true,
-			DisableCompression:  true,
-			MaxIdleConnsPerHost: 1,
-		},
-	}
+// updateServiceCountMetrics updates the service count metrics.
+func (hm *Monitor) updateServiceCountMetrics() {
+	total := len(hm.healthCache)
+	healthy := 0
+	unhealthy := 0
 
-	// Try common health check endpoints
-	endpoints := []string{"/health", "/healthz", "/ready", "/ping", "/"}
-
-	for _, endpoint := range endpoints {
-		url := fmt.Sprintf("http://localhost:%d%s", port, endpoint)
-		resp, err := client.Get(url)
-		if err != nil {
-			continue // Try next endpoint
-		}
-		// Ensure resp.Body.Close() error is checked
-		if err := resp.Body.Close(); err != nil {
-			logger.LogError("Failed to close response body", err)
-		}
-
-		// Accept any HTTP response as healthy (even 404)
-		if resp.StatusCode < 500 {
-			return nil
+	for _, status := range hm.healthCache {
+		if status.IsHealthy {
+			healthy++
+		} else {
+			unhealthy++
 		}
 	}
 
-	return errors.New("all HTTP endpoints returned 5xx errors")
+	metrics.UpdateServiceCounts(total, healthy, unhealthy)
+}
+
+// UpdateServicePerformance updates the service performance data from real proxy requests
+// This provides actual user experience metrics rather than synthetic health checks.
+func (hm *Monitor) UpdateServicePerformance(
+	serviceKey string,
+	responseTime time.Duration,
+	success bool,
+) {
+	hm.cacheLock.Lock()
+	defer hm.cacheLock.Unlock()
+
+	statusObj, exists := hm.healthCache[serviceKey]
+	if !exists {
+		statusObj = hm.createNewServiceEntry(responseTime)
+		hm.healthCache[serviceKey] = statusObj
+	} else {
+		hm.updateExistingServiceEntry(statusObj, responseTime, success)
+	}
+
+	// Update metrics for this service
+	if statusObj.Port > 0 {
+		metrics.UpdateHealthStatus(
+			serviceKey,
+			strconv.Itoa(statusObj.Port),
+			statusObj.IsHealthy,
+			statusObj.FailureCount,
+		)
+	}
+
+	// Update service count metrics
+	hm.updateServiceCountMetrics()
+}
+
+// createNewServiceEntry creates a new service entry for performance monitoring.
+func (hm *Monitor) createNewServiceEntry(responseTime time.Duration) *Status {
+	return &Status{
+		IsHealthy:          true, // Assume healthy initially
+		LastChecked:        time.Now(),
+		LastHealthy:        time.Now(),
+		FailureCount:       0,
+		ResponseTime:       responseTime,
+		Port:               0, // Will be set when port-forward is established
+		ResponseTimeSource: "real_request",
+	}
+}
+
+// updateExistingServiceEntry updates an existing service entry with new performance data.
+func (hm *Monitor) updateExistingServiceEntry(
+	statusObj *Status,
+	responseTime time.Duration,
+	success bool,
+) {
+	statusObj.LastChecked = time.Now()
+	statusObj.ResponseTime = responseTime
+	statusObj.ResponseTimeSource = "real_request"
+
+	if success {
+		statusObj.IsHealthy = true
+		statusObj.LastHealthy = time.Now()
+		statusObj.FailureCount = 0
+		statusObj.ErrorMessage = ""
+	} else {
+		statusObj.FailureCount++
+		if statusObj.FailureCount >= hm.maxFailures {
+			statusObj.IsHealthy = false
+			statusObj.ErrorMessage = fmt.Sprintf("Request failed (HTTP %d)", statusObj.FailureCount)
+		}
+	}
 }
 
 // Removed: global accessor helpers; use Monitor instance directly.
