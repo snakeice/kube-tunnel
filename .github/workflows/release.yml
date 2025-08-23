@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -58,7 +58,7 @@ jobs:
           cosign-release: "v2.2.2"
 
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0.15.1
+        uses: anchore/sbom-action/download-syft@v0.20.5
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
@@ -90,7 +90,7 @@ jobs:
     needs: release
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Update README badges
         run: |
@@ -192,7 +192,7 @@ jobs:
     needs: release
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Download release binary
         run: |
