@@ -5,7 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.0.2] - 2025-08-25
+
+### Fixed
+
+- **Critical DNS Resolution Issue**: Fixed systemd-resolved DNS scope activation by changing default virtual interface IP from loopback address (127.0.0.10) to private IP (10.8.0.1)
+  - Resolved "Current Scopes: none" issue that prevented DNS queries to `*.svc.cluster.local` domains from resolving
+  - Fixed timeout errors when querying cluster domains (e.g., `dig test.svc.cluster.local`)
+  - systemd-resolved now properly activates DNS scope for the virtual interface, showing "Current Scopes: DNS"
+- **DNS Server Binding**: Enhanced DNS server to properly bind to virtual interface IP when configured, with intelligent fallback to localhost during interface creation
+  - Added smart detection when DNS bind IP matches virtual interface IP to handle bootstrap chicken-and-egg problem
+  - Improved error handling during DNS server rebinding process
+
+### Changed
+
+- **Default Virtual Interface Configuration**:
+  - Changed default virtual interface IP from `127.0.0.10` to `10.8.0.1` to ensure proper DNS scope activation
+  - Updated DNS and port forward binding to use virtual interface IP (`10.8.0.1`) instead of localhost (`127.0.0.1`)
+  - Replaced loopback IP ranges (`127.0.0.0/24`, `127.1.0.0/16`) with private IP ranges (`10.8.0.0/24`, `10.9.0.0/24`) for virtual interface allocation
+- **DNS Bootstrap Process**: Enhanced DNS server initialization to start on localhost when target bind IP is the virtual interface IP, then rebind after interface creation
+- **Logging Improvements**: Added detailed logging for DNS bind IP decisions, virtual interface IP allocation, and bootstrap process
+
+### Technical Details
+
+- **Root Cause**: systemd-resolved does not activate DNS scope for interfaces using loopback IP addresses (127.x.x.x range)
+- **Solution**: Use private IP addresses (10.x.x.x range) which systemd-resolved properly recognizes for DNS scope activation
+- **Backward Compatibility**: All changes can be overridden via environment variables (KTUN_VIRTUAL_IP, KTUN_DNS_IP, KTUN_FORWARD_IP)
 
 ## [0.0.1] - 2025-08-23
 
@@ -16,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `USE_FREE_LOCAL_IP`: Enable/disable automatic IP allocation (default: true)
   - `FORCE_LOCAL_IP`: Force a specific local IP address
   - `PROXY_BIND_IP`: Configure proxy server bind address
-  - `DNS_BIND_IP`: Configure DNS server bind address  
+  - `DNS_BIND_IP`: Configure DNS server bind address
   - `PORT_FORWARD_BIND_IP`: Configure port forward bind address
 - IP Manager for intelligent local IP allocation and lifecycle management
 - Enhanced DNS server to automatically resolve to allocated IPs

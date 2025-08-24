@@ -127,16 +127,17 @@ func createDefaultHealthConfig() HealthConfig {
 
 // createDefaultNetworkConfig creates the default network configuration.
 func createDefaultNetworkConfig() NetworkConfig {
+	virtualIP := "10.8.0.1"
 	return NetworkConfig{
 		UseVirtualInterface:  true,
 		VirtualInterfaceName: "kube-dummy0",
-		VirtualInterfaceIP:   "127.0.0.10",
+		VirtualInterfaceIP:   virtualIP,
 		InterfaceType:        dummyInterfaceType,
-		DNSBindIP:            "127.0.0.1",
-		PortForwardBindIP:    "127.0.0.1",
+		DNSBindIP:            virtualIP,
+		PortForwardBindIP:    virtualIP,
 		CustomIPRanges: []string{
-			"127.0.0.0/24",
-			"127.1.0.0/16",
+			"10.8.0.0/24",
+			"10.9.0.0/24",
 		},
 	}
 }

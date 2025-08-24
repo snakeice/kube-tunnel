@@ -15,6 +15,8 @@ import (
 	"github.com/snakeice/kube-tunnel/internal/tools"
 )
 
+const localhostIP = "127.0.0.1"
+
 type ProxyDNS struct {
 	server           *dns.Server
 	port             int
@@ -28,16 +30,27 @@ type ProxyDNS struct {
 }
 
 func NewProxyDNS(cfg *config.Config, portForwardIP string) *ProxyDNS {
-	dnsBindIP := "127.0.0.1"
+	dnsBindIP := cfg.Network.DNSBindIP
+	if dnsBindIP == "" {
+		dnsBindIP = localhostIP
+	}
 
-	port, err := tools.GetFreePortOnIP(dnsBindIP)
+	// If DNS bind IP is the same as virtual interface IP, start on localhost first
+	// and rebind later to avoid chicken-and-egg problem
+	initialBindIP := dnsBindIP
+	if dnsBindIP == cfg.Network.VirtualInterfaceIP {
+		initialBindIP = localhostIP
+		logger.Log.Infof("DNS bind IP matches virtual interface IP, starting on localhost first")
+	}
+
+	port, err := tools.GetFreePortOnIP(initialBindIP)
 	if err != nil {
-		log.Fatalf("Failed to get free port on localhost: %v", err)
+		log.Fatalf("Failed to get free port on %s: %v", initialBindIP, err)
 	}
 
 	resolveIP := portForwardIP
 	if resolveIP == "" {
-		resolveIP = "127.0.0.1"
+		resolveIP = localhostIP
 	}
 
 	systemResolver := &net.Resolver{
@@ -47,14 +60,14 @@ func NewProxyDNS(cfg *config.Config, portForwardIP string) *ProxyDNS {
 	return &ProxyDNS{
 		port: port,
 		server: &dns.Server{
-			Addr: fmt.Sprintf("%s:%d", dnsBindIP, port),
+			Addr: fmt.Sprintf("%s:%d", initialBindIP, port),
 			Net:  "udp",
 		},
 		quit:           make(chan struct{}),
 		resolveToIP:    resolveIP,
 		config:         cfg,
 		systemResolver: systemResolver,
-		initialBindIP:  dnsBindIP,
+		initialBindIP:  initialBindIP,
 	}
 }
 
@@ -69,7 +82,8 @@ func (p *ProxyDNS) Start() error {
 
 	go func() {
 		logger.Log.Infof(
-			"DNS server starting on localhost:%d, resolving *.svc.cluster.local to %s, forwarding other queries to system DNS",
+			"DNS server starting on %s:%d, resolving *.svc.cluster.local to %s, forwarding other queries to system DNS",
+			p.initialBindIP,
 			p.port,
 			p.resolveToIP,
 		)

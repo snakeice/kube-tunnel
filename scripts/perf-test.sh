@@ -18,6 +18,10 @@ PROXY_HOST=${PROXY_HOST:-localhost}
 TEST_SERVICE=${TEST_SERVICE:-"httpbin.default.svc.cluster.local"}
 CONCURRENT_REQUESTS=${CONCURRENT_REQUESTS:-10}
 TOTAL_REQUESTS=${TOTAL_REQUESTS:-100}
+USE_VIRTUAL_INTERFACE=${USE_VIRTUAL_INTERFACE:-false}
+VIRTUAL_INTERFACE_IP=${VIRTUAL_INTERFACE_IP:-"127.0.0.10"}
+VIRTUAL_INTERFACE_NAME=${VIRTUAL_INTERFACE_NAME:-"kube-dummy0"}
+DRY_RUN=${1:-false}
 
 echo -e "${BLUE}🚀 kube-tunnel Performance Test Suite${NC}"
 echo "=================================="
@@ -25,6 +29,11 @@ echo "Proxy: http://${PROXY_HOST}:${PROXY_PORT}"
 echo "Test Service: ${TEST_SERVICE}"
 echo "Concurrent: ${CONCURRENT_REQUESTS}"
 echo "Total Requests: ${TOTAL_REQUESTS}"
+echo "Virtual Interface: ${USE_VIRTUAL_INTERFACE}"
+if [[ "$USE_VIRTUAL_INTERFACE" == "true" ]]; then
+    echo "Virtual Interface IP: ${VIRTUAL_INTERFACE_IP}"
+    echo "Virtual Interface Name: ${VIRTUAL_INTERFACE_NAME}"
+fi
 echo ""
 
 # Check if required tools are available
@@ -36,8 +45,71 @@ check_tool() {
     fi
 }
 
+# Check if required tools are available
+check_tool() {
+    if ! command -v $1 &> /dev/null; then
+        echo -e "${RED}❌ $1 is required but not installed${NC}"
+        echo "Install with: go install github.com/rakyll/hey@latest"
+        exit 1
+    fi
+}
+
+# Check virtual interface functionality
+check_virtual_interface() {
+    if [[ "$USE_VIRTUAL_INTERFACE" == "true" ]]; then
+        echo -e "${YELLOW}🔍 Checking virtual interface support...${NC}"
+
+        # Check if running with sufficient privileges
+        if [[ $EUID -ne 0 ]] && ! groups | grep -q docker; then
+            echo -e "${YELLOW}⚠️  Virtual interface requires root privileges or Docker group membership${NC}"
+            echo "   Run with: sudo $0 or add user to docker group"
+            return 1
+        fi
+
+        # Check if interface exists
+        if ip link show "$VIRTUAL_INTERFACE_NAME" &>/dev/null; then
+            echo -e "${GREEN}✅ Virtual interface $VIRTUAL_INTERFACE_NAME exists${NC}"
+
+            # Check if IP is configured
+            if ip addr show "$VIRTUAL_INTERFACE_NAME" | grep -q "$VIRTUAL_INTERFACE_IP"; then
+                echo -e "${GREEN}✅ Virtual interface IP $VIRTUAL_INTERFACE_IP is configured${NC}"
+            else
+                echo -e "${YELLOW}⚠️  Virtual interface exists but IP $VIRTUAL_INTERFACE_IP not configured${NC}"
+            fi
+        else
+            echo -e "${YELLOW}⚠️  Virtual interface $VIRTUAL_INTERFACE_NAME does not exist${NC}"
+            echo "   Will be created automatically by kube-tunnel"
+        fi
+
+        # Test DNS resolution through virtual interface
+        echo -e "${YELLOW}🔍 Testing DNS resolution through virtual interface...${NC}"
+        if timeout 5 nslookup kubernetes.default.svc.cluster.local "$VIRTUAL_INTERFACE_IP" &>/dev/null; then
+            echo -e "${GREEN}✅ DNS resolution through virtual interface works${NC}"
+        else
+            echo -e "${YELLOW}⚠️  DNS resolution through virtual interface not available${NC}"
+            echo "   This is normal if kube-tunnel is not running"
+        fi
+    fi
+
+    return 0
+}
+
+# Handle dry run mode
+if [[ "$DRY_RUN" == "--dry-run" || "$DRY_RUN" == "true" ]]; then
+    echo -e "${BLUE}🧪 Dry run mode - validating test configuration${NC}"
+    echo "=============================================="
+
+    check_tool "hey"
+    check_tool "curl"
+    check_virtual_interface
+
+    echo -e "${GREEN}✅ Performance test script validation completed${NC}"
+    exit 0
+fi
+
 check_tool "hey"
 check_tool "curl"
+check_virtual_interface
 
 # Test 1: Health check
 echo -e "${YELLOW}📊 Test 1: Health Check${NC}"
@@ -51,6 +123,30 @@ if [ "$response" = "200" ]; then
 else
     echo -e "${RED}❌ Health check failed (HTTP $response)${NC}"
     exit 1
+fi
+
+# Test 1.5: Virtual interface DNS test (if enabled)
+if [[ "$USE_VIRTUAL_INTERFACE" == "true" ]]; then
+    echo -e "${YELLOW}📊 Test 1.5: Virtual Interface DNS Resolution${NC}"
+
+    # Test DNS resolution through virtual interface
+    start_time=$(date +%s%N)
+    if timeout 10 nslookup kubernetes.default.svc.cluster.local "$VIRTUAL_INTERFACE_IP" &>/dev/null; then
+        end_time=$(date +%s%N)
+        dns_latency=$(( (end_time - start_time) / 1000000 ))
+        echo -e "${GREEN}✅ DNS resolution through virtual interface (${dns_latency}ms)${NC}"
+
+        # Test direct service access through virtual interface
+        if timeout 10 curl -s --connect-timeout 5 "http://${TEST_SERVICE}/" &>/dev/null; then
+            echo -e "${GREEN}✅ Direct service access through virtual interface${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Direct service access through virtual interface failed${NC}"
+            echo "   This may be expected if services are not running"
+        fi
+    else
+        echo -e "${YELLOW}⚠️  DNS resolution through virtual interface failed${NC}"
+        echo "   Continuing with proxy-based tests..."
+    fi
 fi
 
 # Test 2: First request latency (cold start)
@@ -128,15 +224,30 @@ cache_times=()
 for service in "${services[@]}"; do
     echo "  Testing ${service}.svc.cluster.local..."
     start_time=$(date +%s%N)
+
+    # Test through proxy first
     response=$(curl -s -w "%{http_code}" -o /dev/null http://${service}.svc.cluster.local:${PROXY_PORT}/get 2>/dev/null || curl -s -w "%{http_code}" -o /dev/null http://${service}.svc.cluster.local:${PROXY_PORT}/ 2>/dev/null || echo "404")
     end_time=$(date +%s%N)
     cache_time=$(( (end_time - start_time) / 1000000 ))
     cache_times+=($cache_time)
 
     if [[ $response == 2* ]] || [[ $response == 4* ]]; then
-        echo "    ✅ ${service}: ${cache_time}ms"
+        echo "    ✅ ${service} (proxy): ${cache_time}ms"
     else
-        echo "    ❌ ${service}: failed"
+        echo "    ❌ ${service} (proxy): failed"
+    fi
+
+    # Test through virtual interface if enabled
+    if [[ "$USE_VIRTUAL_INTERFACE" == "true" ]]; then
+        start_time=$(date +%s%N)
+        # Test direct access through virtual interface DNS
+        if timeout 5 curl -s --connect-timeout 2 "http://${service}.svc.cluster.local/" &>/dev/null; then
+            end_time=$(date +%s%N)
+            vi_time=$(( (end_time - start_time) / 1000000 ))
+            echo "    ✅ ${service} (virtual interface): ${vi_time}ms"
+        else
+            echo "    ⚠️  ${service} (virtual interface): not accessible"
+        fi
     fi
 done
 
@@ -219,6 +330,20 @@ if (( $(echo "$requests_per_sec < 200" | bc -l) )); then
     echo "  export MAX_IDLE_CONNS=300"
     echo "  export MAX_IDLE_CONNS_PER_HOST=100"
     echo "  export MAX_CONCURRENT_STREAMS=2000"
+fi
+
+# Virtual interface specific optimizations
+if [[ "$USE_VIRTUAL_INTERFACE" == "true" ]]; then
+    echo "• Virtual Interface optimizations:"
+    echo "  export KTUN_USE_VIRTUAL=true"
+    echo "  export KTUN_VIRTUAL_INTERFACE_IP=${VIRTUAL_INTERFACE_IP}"
+    echo "  export KTUN_VIRTUAL_INTERFACE_NAME=${VIRTUAL_INTERFACE_NAME}"
+    echo "  # Use direct DNS resolution for better performance"
+elif [[ "$USE_VIRTUAL_INTERFACE" == "false" ]]; then
+    echo "• Consider enabling virtual interface for better DNS performance:"
+    echo "  export USE_VIRTUAL_INTERFACE=true"
+    echo "  sudo ./kube-tunnel  # Requires elevated privileges"
+    echo "  # Or run in Docker with --privileged flag"
 fi
 
 # Test 7: Health monitoring performance

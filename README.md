@@ -457,6 +457,41 @@ go build -o kube-tunnel ./cmd
 
 # Run tests
 go test ./...
+
+# Run performance tests
+./scripts/perf-test.sh --dry-run  # Validate without running
+./scripts/perf-test.sh            # Full performance test suite
+
+# Test virtual interface functionality
+sudo ./scripts/test-virtual-interface.sh quick         # Quick virtual interface tests
+sudo ./scripts/test-virtual-interface.sh comprehensive # Comprehensive tests
+
+# Health monitoring demo
+./scripts/health-demo.sh --help                        # Show options
+./scripts/health-demo.sh --virtual-interface          # Test with virtual interface
+```
+
+### Testing Scripts
+
+kube-tunnel includes comprehensive testing scripts:
+
+- **`scripts/perf-test.sh`** — Performance testing with virtual interface support
+- **`scripts/health-demo.sh`** — Health monitoring demonstration
+- **`scripts/test-virtual-interface.sh`** — Virtual interface functionality tests
+
+#### Virtual Interface Testing
+
+```bash
+# Test virtual interface support
+export USE_VIRTUAL_INTERFACE=true
+export VIRTUAL_INTERFACE_IP=127.0.0.10
+export VIRTUAL_INTERFACE_NAME=kube-dummy0
+
+# Run performance tests with virtual interface
+./scripts/perf-test.sh
+
+# Test health monitoring with virtual interface
+./scripts/health-demo.sh --virtual-interface --vi-ip 127.0.0.10
 ```
 
 ## 📄 License
