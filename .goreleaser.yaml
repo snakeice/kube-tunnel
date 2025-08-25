@@ -75,9 +75,9 @@ changelog:
       - "^refactor:"
       - "^chore:"
       - "merge conflict"
-      - Merge pull request
-      - Merge remote-tracking branch
-      - Merge branch
+      - "Merge pull request"
+      - "Merge remote-tracking branch"
+      - "Merge branch"
   groups:
     - title: "🚀 New Features"
       regexp: "^.*feat[(\\w)]*:+.*$"
@@ -122,7 +122,7 @@ release:
     ### 🚀 Quick Start
     ```bash
     # Download and extract
-    curl -L https://github.com/snakeice/kube-tunnel/releases/download/{{ .Tag }}/kube-tunnel_{{ .Os }}_{{ .Arch }}.tar.gz | tar xz
+    curl -L https://github.com/snakeice/kube-tunnel/releases/download/{{ .Tag }}/kube-tunnel_{{ .Runtime.Goos }}_{{ .Runtime.Goarch }}.tar.gz | tar xz
 
     # Start proxy
     ./kube-tunnel
@@ -215,16 +215,3 @@ docker_signs:
       - "sign"
       - "${artifact}@${digest}"
       - "--yes"
-
-announce:
-  discord:
-    enabled: true
-    message_template: |
-      🚀 **kube-tunnel {{ .Tag }}** is now available!
-
-      ⚡ Performance improvements and new features for Kubernetes service proxying.
-
-      📥 **Download**: {{ .ReleaseURL }}
-      🐳 **Docker**: `ghcr.io/snakeice/kube-tunnel:{{ .Tag }}`
-
-      {{ .Changelog }}
