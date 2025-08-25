@@ -9,13 +9,13 @@ RUN apk add --no-cache \
     tzdata
 
 # # Set working directory
-# WORKDIR /app
+WORKDIR /app
 
 # # Copy source code
-# COPY . .
+COPY . .
 
 # # Download dependencies
-# RUN go mod download
+RUN go mod download
 
 # Build arguments for cross-compilation
 ARG TARGETOS
@@ -25,6 +25,9 @@ ARG TARGETVARIANT
 # Set environment variables for cross-compilation
 ENV GOOS=$TARGETOS
 ENV GOARCH=$TARGETARCH
+
+# # Build the application
+RUN CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -o kube-tunnel ./cmd
 
 # # Final stage - minimal runtime image
 FROM scratch
@@ -36,7 +39,7 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
 # Copy the binary
-COPY kube-tunnel /usr/local/bin/kube-tunnel
+COPY --from=builder /app/kube-tunnel /usr/local/bin/kube-tunnel
 
 # Create non-root user
 USER 65534:65534
