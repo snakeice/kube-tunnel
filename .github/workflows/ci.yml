@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.25"
+  GO_VERSION: "1.24"
 
 jobs:
   test:
@@ -275,9 +275,9 @@ jobs:
           chmod +x scripts/perf-test.sh
           chmod +x scripts/health-demo.sh
 
-          # Test virtual interface script (dry-run mode)
+          # Test virtual interface script
           echo "🧪 Testing virtual interface script..."
-          ./scripts/test-virtual-interface.sh dry-run
+          sudo ./scripts/test-virtual-interface.sh comprehensive
 
           # Create test deployment
           kubectl create deployment test-app --image=nginx:alpine
