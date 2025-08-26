@@ -277,7 +277,7 @@ jobs:
 
           # Test virtual interface script
           echo "🧪 Testing virtual interface script..."
-          sudo ./scripts/test-virtual-interface.sh comprehensive
+          ./scripts/test-virtual-interface.sh comprehensive
 
           # Create test deployment
           kubectl create deployment test-app --image=nginx:alpine
