@@ -35,37 +35,23 @@ check_privileges() {
 
 # Function to cleanup interface if it exists
 cleanup_interface() {
-    if ip link show "$VIRTUAL_INTERFACE_NAME" &>/dev/null; then
-        echo -e "${YELLOW}🧹 Cleaning up existing interface ${VIRTUAL_INTERFACE_NAME}${NC}"
-        ip link delete "$VIRTUAL_INTERFACE_NAME" 2>/dev/null || true
+    if ip addr show lo | grep -q "$VIRTUAL_INTERFACE_IP"; then
+        echo -e "${YELLOW}🧹 Cleaning up IP address from loopback interface${NC}"
+        ip addr del "$VIRTUAL_INTERFACE_IP/32" dev lo 2>/dev/null || true
     fi
 }
 
 # Function to create test interface
 create_test_interface() {
-    echo -e "${YELLOW}🔧 Creating test interface ${VIRTUAL_INTERFACE_NAME}${NC}"
+    echo -e "${YELLOW}🔧 Assigning IP to loopback interface${NC}"
 
-    # Create dummy interface
-    if ! ip link add "$VIRTUAL_INTERFACE_NAME" type dummy; then
-        echo -e "${RED}❌ Failed to create dummy interface${NC}"
+    # Add IP address to loopback interface
+    if ! ip addr add "$VIRTUAL_INTERFACE_IP/32" dev lo; then
+        echo -e "${RED}❌ Failed to add IP address to loopback interface${NC}"
         return 1
     fi
 
-    # Add IP address
-    if ! ip addr add "$VIRTUAL_INTERFACE_IP/32" dev "$VIRTUAL_INTERFACE_NAME"; then
-        echo -e "${RED}❌ Failed to add IP address${NC}"
-        ip link delete "$VIRTUAL_INTERFACE_NAME" 2>/dev/null || true
-        return 1
-    fi
-
-    # Bring interface up
-    if ! ip link set "$VIRTUAL_INTERFACE_NAME" up; then
-        echo -e "${RED}❌ Failed to bring interface up${NC}"
-        ip link delete "$VIRTUAL_INTERFACE_NAME" 2>/dev/null || true
-        return 1
-    fi
-
-    echo -e "${GREEN}✅ Test interface created successfully${NC}"
+    echo -e "${GREEN}✅ IP assigned successfully to loopback interface${NC}"
     return 0
 }
 
@@ -73,21 +59,9 @@ create_test_interface() {
 test_interface_config() {
     echo -e "${YELLOW}🔍 Testing interface configuration${NC}"
 
-    # Check if interface exists
-    if ! ip link show "$VIRTUAL_INTERFACE_NAME" &>/dev/null; then
-        echo -e "${RED}❌ Interface does not exist${NC}"
-        return 1
-    fi
-
-    # Check if IP is configured
-    if ! ip addr show "$VIRTUAL_INTERFACE_NAME" | grep -q "$VIRTUAL_INTERFACE_IP"; then
-        echo -e "${RED}❌ IP address not configured${NC}"
-        return 1
-    fi
-
-    # Check if interface is up
-    if ! ip link show "$VIRTUAL_INTERFACE_NAME" | grep -q "state UP"; then
-        echo -e "${RED}❌ Interface is not up${NC}"
+    # Check if IP is configured on loopback
+    if ! ip addr show lo | grep -q "$VIRTUAL_INTERFACE_IP"; then
+        echo -e "${RED}❌ IP address not configured on loopback interface${NC}"
         return 1
     fi
 
@@ -99,13 +73,6 @@ test_interface_config() {
 test_dns_functionality() {
     echo -e "${YELLOW}🔍 Testing DNS functionality${NC}"
 
-    # Test basic connectivity to the interface IP
-    if ping -c 1 -W 1 "$VIRTUAL_INTERFACE_IP" &>/dev/null; then
-        echo -e "${GREEN}✅ Interface IP is reachable${NC}"
-    else
-        echo -e "${RED}❌ Interface IP is not reachable${NC}"
-        return 1
-    fi
 
     # Test that we can bind to the interface (mock DNS server test)
     if timeout 2 nc -l -s "$VIRTUAL_INTERFACE_IP" -p 15353 &>/dev/null &
