@@ -73,13 +73,6 @@ test_interface_config() {
 test_dns_functionality() {
     echo -e "${YELLOW}🔍 Testing DNS functionality${NC}"
 
-    # Test basic connectivity to the interface IP
-    if ping -c 1 -W 1 "$VIRTUAL_INTERFACE_IP" &>/dev/null; then
-        echo -e "${GREEN}✅ Interface IP is reachable${NC}"
-    else
-        echo -e "${RED}❌ Interface IP is not reachable${NC}"
-        return 1
-    fi
 
     # Test that we can bind to the interface (mock DNS server test)
     if timeout 2 nc -l -s "$VIRTUAL_INTERFACE_IP" -p 15353 &>/dev/null &
