@@ -26,7 +26,7 @@ type ProxyDNS struct {
 	config           *config.Config
 	systemResolver   *net.Resolver
 	initialBindIP    string
-	virtualInterface *VirtualInterface
+	interfaceManager *InterfaceManager
 }
 
 func NewProxyDNS(cfg *config.Config, portForwardIP string) *ProxyDNS {
@@ -108,7 +108,7 @@ func (p *ProxyDNS) Start() error {
 
 	p.running = true
 
-	virtualInterface, err := SetupDNS("svc.cluster.local", p.port, p.config)
+	interfaceManager, err := SetupDNS("svc.cluster.local", p.port, p.config)
 	if err != nil {
 		if stopErr := p.Stop(); stopErr != nil {
 			logger.LogError("Failed to stop DNS after setup failure", stopErr)
@@ -116,7 +116,7 @@ func (p *ProxyDNS) Start() error {
 		return fmt.Errorf("failed to setup DNS: %w", err)
 	}
 
-	p.virtualInterface = virtualInterface
+	p.interfaceManager = interfaceManager
 
 	return nil
 }
@@ -231,14 +231,14 @@ func (p *ProxyDNS) Stop() error {
 	close(p.quit)
 	p.running = false
 
-	if p.virtualInterface != nil {
-		logger.Log.Info("Cleaning up virtual interface...")
-		if err := p.virtualInterface.Cleanup(); err != nil {
-			logger.Log.Warnf("Failed to cleanup virtual interface: %v", err)
+	if p.interfaceManager != nil {
+		logger.Log.Info("Cleaning up virtual interfaces...")
+		if err := p.interfaceManager.Cleanup(); err != nil {
+			logger.Log.Warnf("Failed to cleanup virtual interfaces: %v", err)
 		} else {
-			logger.Log.Info("Virtual interface cleaned up successfully")
+			logger.Log.Info("Virtual interfaces cleaned up successfully")
 		}
-		p.virtualInterface = nil
+		p.interfaceManager = nil
 	}
 
 	if err := RevertDNS(); err != nil {
@@ -248,12 +248,23 @@ func (p *ProxyDNS) Stop() error {
 	return p.server.Shutdown()
 }
 
-// GetVirtualInterfaceIP returns the IP of the virtual interface if one was created.
+// GetVirtualInterfaceIP returns the IP of the DNS virtual interface if one was created.
 func (p *ProxyDNS) GetVirtualInterfaceIP() string {
-	if p.virtualInterface != nil {
-		return p.virtualInterface.GetIP()
+	if p.interfaceManager != nil {
+		dnsInterface := p.interfaceManager.GetDNSInterface()
+		if dnsInterface != nil {
+			return dnsInterface.GetIP()
+		}
 	}
 	return ""
+}
+
+// GetPortForwardIP returns the IP to use for port forwarding.
+func (p *ProxyDNS) GetPortForwardIP() string {
+	if p.interfaceManager != nil {
+		return p.interfaceManager.GetPortForwardIP()
+	}
+	return "127.0.0.1"
 }
 
 func (p *ProxyDNS) HandleRequest(w dns.ResponseWriter, r *dns.Msg) {

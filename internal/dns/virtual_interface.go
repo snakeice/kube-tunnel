@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	// DefaultVirtualInterfaceName is the default name of the virtual interface.
-	DefaultVirtualInterfaceName = "kube-dummy0"
+	// DefaultVirtualInterfaceName is the default name of the DNS virtual interface.
+	DefaultVirtualInterfaceName = "kube-dns0"
+
+	dummyInterfaceType = "dummy"
 )
 
 // VirtualInterface manages a dummy network interface for cluster DNS.
@@ -195,25 +197,13 @@ func (vi *VirtualInterface) validateAndGetName() (string, error) {
 
 // createDummyInterface creates the dummy interface.
 func (vi *VirtualInterface) createDummyInterface() error {
-	interfaceType := vi.config.Network.InterfaceType
-	if interfaceType == "" {
-		interfaceType = "dummy" // Default to dummy interface
-	}
-
-	if interfaceType != "dummy" {
-		return fmt.Errorf(
-			"unsupported interface type: %s (only 'dummy' is supported)",
-			interfaceType,
-		)
-	}
-
 	// Create dummy interface
 	name, err := vi.validateAndGetName()
 	if err != nil {
 		return err
 	}
 	cmd := exec.Command("sudo", "ip", "link", "add", name, "type", "dummy")
-	logger.Log.Infof("Creating %s interface: %s", interfaceType, strings.Join(cmd.Args, " "))
+	logger.Log.Infof("Creating %s interface: %s", dummyInterfaceType, strings.Join(cmd.Args, " "))
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -221,7 +211,7 @@ func (vi *VirtualInterface) createDummyInterface() error {
 		if strings.Contains(string(out), "RTNETLINK answers: File exists") {
 			logger.Log.Debugf("Interface %s already exists, continuing", vi.name)
 		} else {
-			return fmt.Errorf("failed to create %s interface: %w, output: %s", interfaceType, err, string(out))
+			return fmt.Errorf("failed to create %s interface: %w, output: %s", dummyInterfaceType, err, string(out))
 		}
 	}
 	return nil

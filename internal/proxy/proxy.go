@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,8 +93,8 @@ func createTransport(
 			// Use configurable HTTP/2 settings
 			MaxHeaderListSize:  262144, // 256KB
 			DisableCompression: false,
-			ReadIdleTimeout:    30 * time.Second,
-			PingTimeout:        15 * time.Second,
+			ReadIdleTimeout:    cfg.ResponseHeaderTimeout, // Use configurable timeout
+			PingTimeout:        30 * time.Second,          // Increased from 15s
 		}
 	}
 
@@ -102,11 +103,11 @@ func createTransport(
 		MaxIdleConnsPerHost:   cfg.MaxIdleConnsPerHost,
 		MaxConnsPerHost:       cfg.MaxConnsPerHost,
 		IdleConnTimeout:       cfg.IdleTimeout,
-		TLSHandshakeTimeout:   5 * time.Second,        // Keep optimized
-		ExpectContinueTimeout: 500 * time.Millisecond, // Keep optimized
+		TLSHandshakeTimeout:   5 * time.Second,         // Keep optimized
+		ExpectContinueTimeout: 1500 * time.Millisecond, // Keep optimized
 		DisableCompression:    false,
 		ForceAttemptHTTP2:     cfg.ForceHTTP2,
-		ResponseHeaderTimeout: 10 * time.Second,
+		ResponseHeaderTimeout: cfg.ResponseHeaderTimeout, // Use configurable timeout
 		DisableKeepAlives:     false,
 	}
 
@@ -145,18 +146,18 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	// Log initial attempt
 	logger.LogRetryAttempt(0, rt.maxRetries, req.Method, req.URL.Path, rt.isGRPC)
 
+	retryCtx, retryCancel := rt.createRetryContext(req.Context())
+	defer retryCancel()
+
 	for attempt := 0; attempt <= rt.maxRetries; attempt++ {
-		select {
-		case <-req.Context().Done():
-			logger.LogConnectionCanceled(req.Method, req.URL.Path, attempt)
-			return nil, req.Context().Err()
-		default:
+		rt.logAttempt(req, attempt)
+
+		if err := rt.checkDeadline(retryCtx, req, attempt); err != nil {
+			return nil, err
 		}
 
-		// Clone the request for each retry attempt
-		reqClone := req.Clone(req.Context())
+		reqClone := req.Clone(retryCtx)
 
-		// Log each attempt
 		if attempt > 0 {
 			logger.LogRetryAttempt(attempt, rt.maxRetries, req.Method, req.URL.Path, rt.isGRPC)
 		}
@@ -164,43 +165,170 @@ func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		resp, err := rt.base.RoundTrip(reqClone)
 
 		if err == nil {
-			if attempt > 0 {
-				logger.LogRetrySuccess(attempt)
-			}
+			rt.logSuccess(req, attempt)
 			return resp, nil
 		}
 
-		// Check if this is a retryable error
-		if !isRetryableError(err) {
-			logger.LogNonRetryableError(req.Method, req.URL.Path, err, rt.isGRPC)
+		if rt.handleError(err, req, attempt) {
 			return nil, err
 		}
 
 		lastErr = err
+		rt.logRetryError(req, attempt, err)
 
-		// Don't wait after the last attempt
 		if attempt < rt.maxRetries {
-			delay := minDuration(
-				// Faster exponential backoff
-				rt.baseDelay*time.Duration(1<<attempt),
-				// Cap at 1 second instead of 5
-				1*time.Second)
-
-			logger.LogRetry(attempt+1, delay.String(), err)
-
-			// Use context-aware sleep to allow cancellation
-			select {
-			case <-req.Context().Done():
-				logger.LogConnectionCanceled(req.Method, req.URL.Path, attempt+1)
-				return nil, req.Context().Err()
-			case <-time.After(delay):
-				// Continue to next attempt
+			if err := rt.waitBeforeRetry(retryCtx, req, attempt); err != nil {
+				return nil, err
 			}
 		}
 	}
 
 	logger.LogRetryFailed(rt.maxRetries+1, lastErr)
 	return nil, lastErr
+}
+
+func (rt *retryableTransport) createRetryContext(
+	parentCtx context.Context,
+) (context.Context, context.CancelFunc) {
+	deadline, hasDeadline := parentCtx.Deadline()
+
+	if hasDeadline {
+		return context.WithDeadline(context.Background(), deadline)
+	}
+
+	cfg := config.GetConfig()
+	return context.WithTimeout(context.Background(), cfg.Performance.ProxyTimeout)
+}
+
+func (rt *retryableTransport) logAttempt(req *http.Request, attempt int) {
+	logger.LogDebug("Proxy connection attempt", logrus.Fields{
+		"method":               req.Method,
+		"path":                 req.URL.Path,
+		"attempt":              attempt,
+		"remote_addr":          req.RemoteAddr,
+		"request_id":           req.Header.Get("X-Request-Id"),
+		"connection_lifecycle": "open",
+	})
+}
+
+func (rt *retryableTransport) checkDeadline(
+	retryCtx context.Context,
+	req *http.Request,
+	attempt int,
+) error {
+	select {
+	case <-retryCtx.Done():
+		if errors.Is(retryCtx.Err(), context.DeadlineExceeded) {
+			logger.LogDebug("Request deadline exceeded during retry", logrus.Fields{
+				"method":  req.Method,
+				"path":    req.URL.Path,
+				"attempt": attempt,
+				"grpc":    rt.isGRPC,
+			})
+			return retryCtx.Err()
+		}
+	default:
+	}
+	return nil
+}
+
+func (rt *retryableTransport) logSuccess(req *http.Request, attempt int) {
+	logger.LogDebug("Proxy connection success", logrus.Fields{
+		"method":               req.Method,
+		"path":                 req.URL.Path,
+		"attempt":              attempt,
+		"remote_addr":          req.RemoteAddr,
+		"request_id":           req.Header.Get("X-Request-Id"),
+		"connection_lifecycle": "success",
+	})
+}
+
+func (rt *retryableTransport) handleError(
+	err error,
+	req *http.Request,
+	attempt int,
+) bool {
+	if errors.Is(err, context.Canceled) {
+		logger.LogDebug("Request context canceled - not retrying", logrus.Fields{
+			"method":               req.Method,
+			"path":                 req.URL.Path,
+			"attempt":              attempt,
+			"grpc":                 rt.isGRPC,
+			"remote_addr":          req.RemoteAddr,
+			"request_id":           req.Header.Get("X-Request-Id"),
+			"connection_lifecycle": "cancel",
+		})
+		return true
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) {
+		logger.LogDebug("Request context deadline exceeded - not retrying", logrus.Fields{
+			"method":               req.Method,
+			"path":                 req.URL.Path,
+			"attempt":              attempt,
+			"grpc":                 rt.isGRPC,
+			"remote_addr":          req.RemoteAddr,
+			"request_id":           req.Header.Get("X-Request-Id"),
+			"connection_lifecycle": "deadline_exceeded",
+		})
+		return true
+	}
+
+	if !isRetryableError(err) {
+		logger.LogNonRetryableError(req.Method, req.URL.Path, err, rt.isGRPC)
+		logger.LogDebug("Proxy non-retryable error", logrus.Fields{
+			"method":               req.Method,
+			"path":                 req.URL.Path,
+			"attempt":              attempt,
+			"remote_addr":          req.RemoteAddr,
+			"request_id":           req.Header.Get("X-Request-Id"),
+			"connection_lifecycle": "non-retryable",
+			"error":                err.Error(),
+		})
+		return true
+	}
+
+	return false
+}
+
+func (rt *retryableTransport) logRetryError(req *http.Request, attempt int, err error) {
+	logger.LogDebug("Proxy connection retry", logrus.Fields{
+		"method":               req.Method,
+		"path":                 req.URL.Path,
+		"attempt":              attempt,
+		"remote_addr":          req.RemoteAddr,
+		"request_id":           req.Header.Get("X-Request-Id"),
+		"connection_lifecycle": "retry",
+		"error":                err.Error(),
+	})
+}
+
+func (rt *retryableTransport) waitBeforeRetry(
+	retryCtx context.Context,
+	req *http.Request,
+	attempt int,
+) error {
+	delay := minDuration(
+		rt.baseDelay*time.Duration(1<<attempt),
+		1*time.Second)
+
+	logger.LogRetry(attempt+1, delay.String(), nil)
+
+	select {
+	case <-retryCtx.Done():
+		logger.LogDebug("Retry context deadline exceeded during delay", logrus.Fields{
+			"method":               req.Method,
+			"path":                 req.URL.Path,
+			"attempt":              attempt + 1,
+			"grpc":                 rt.isGRPC,
+			"remote_addr":          req.RemoteAddr,
+			"request_id":           req.Header.Get("X-Request-Id"),
+			"connection_lifecycle": "retry_deadline_exceeded",
+		})
+		return retryCtx.Err()
+	case <-time.After(delay):
+		return nil
+	}
 }
 
 func isRetryableError(err error) bool {
@@ -376,19 +504,40 @@ func setGRPCHeaders(req *http.Request) {
 // proxyDirector creates the director function for the reverse proxy.
 func proxyDirector(localIP string, localPort int, isGRPC bool) func(*http.Request) {
 	return func(req *http.Request) {
+		// Store original host for logging
+		originalHost := req.Host
+
 		req.URL.Scheme = "http"
 		req.URL.Host = fmt.Sprintf("%s:%d", localIP, localPort)
 
-		if req.Header.Get("Connection") == "" && req.ProtoMajor == 2 {
-			req.Header.Del("Connection")
-		}
+		// Remove problematic headers that can cause connection issues
+		req.Header.Del("Connection")
+		req.Header.Del("Proxy-Connection")
+		req.Header.Del("Upgrade")
+
 		if deadline, ok := req.Context().Deadline(); ok {
 			req.Header.Set("X-Request-Deadline", deadline.Format(time.RFC3339))
+		}
+
+		// Add request ID for tracking
+		if req.Header.Get("X-Request-Id") == "" {
+			req.Header.Set("X-Request-Id", strconv.FormatInt(time.Now().UnixNano(), 10))
 		}
 
 		if isGRPC {
 			setGRPCHeaders(req)
 		}
+
+		logger.LogDebug("Proxy director", logrus.Fields{
+			"method":        req.Method,
+			"path":          req.URL.Path,
+			"original_host": originalHost,
+			"target_host":   req.URL.Host,
+			"protocol":      req.Proto,
+			"grpc":          isGRPC,
+			"request_id":    req.Header.Get("X-Request-Id"),
+		})
+
 		logger.LogProxy(req.Method, req.URL.Path, req.Proto, "auto-detect", isGRPC)
 	}
 }
@@ -413,45 +562,124 @@ func proxyModifyResponse(w *responseWriterWrapper, isGRPC bool) func(*http.Respo
 	}
 }
 
+// handleContextError handles context.Canceled and context.DeadlineExceeded errors.
+// Returns true if the error was handled.
+func handleContextError(w http.ResponseWriter, r *http.Request, err error, isGRPC bool) bool {
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	logger.LogDebug(
+		"Request canceled or timed out",
+		logrus.Fields{
+			"method": r.Method,
+			"path":   r.URL.Path,
+			"error":  err.Error(),
+			"grpc":   isGRPC,
+		},
+	)
+
+	// For context cancellation, don't write error response as client may have disconnected
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+
+	// For deadline exceeded, send appropriate timeout response
+	handleTimeoutResponse(w, isGRPC)
+	return true
+}
+
+// handleBenignConnectionError handles common connection closure errors.
+// Returns true if the error was handled.
+func handleBenignConnectionError(_ http.ResponseWriter, r *http.Request, err error) bool {
+	errStr := err.Error()
+	if !strings.Contains(errStr, "read on closed response body") &&
+		!strings.Contains(errStr, "connection reset by peer") {
+		return false
+	}
+
+	logger.LogDebug("Upstream closed connection", logrus.Fields{
+		"method":               r.Method,
+		"path":                 r.URL.Path,
+		"error":                errStr,
+		"remote_addr":          r.RemoteAddr,
+		"request_id":           r.Header.Get("X-Request-Id"),
+		"connection_lifecycle": "reset/closed",
+	})
+	return true
+} // logProxyError logs the appropriate error based on whether it's retryable.
+func logProxyError(r *http.Request, err error) {
+	errStr := err.Error()
+
+	if isRetryableError(err) {
+		logger.LogError("Connection failed after retries", err)
+		logger.LogDebug("Proxy retryable error", logrus.Fields{
+			"method":               r.Method,
+			"path":                 r.URL.Path,
+			"error":                errStr,
+			"remote_addr":          r.RemoteAddr,
+			"request_id":           r.Header.Get("X-Request-Id"),
+			"connection_lifecycle": "retryable",
+		})
+	} else {
+		logger.LogProxyError(r.Method, r.URL.Path, err)
+		logger.LogDebug("Proxy non-retryable error", logrus.Fields{
+			"method":               r.Method,
+			"path":                 r.URL.Path,
+			"error":                errStr,
+			"remote_addr":          r.RemoteAddr,
+			"request_id":           r.Header.Get("X-Request-Id"),
+			"connection_lifecycle": "non-retryable",
+		})
+	}
+}
+
+// handleTimeoutResponse writes a timeout response appropriate for the protocol.
+func handleTimeoutResponse(w http.ResponseWriter, isGRPC bool) {
+	if isGRPC {
+		w.Header().Set("Content-Type", "application/grpc")
+		w.Header().Set("Grpc-Status", "4") // DEADLINE_EXCEEDED
+		w.Header().Set("Grpc-Message", "Request timeout")
+		w.WriteHeader(http.StatusOK)
+	} else {
+		http.Error(w, "Request timeout", http.StatusGatewayTimeout)
+	}
+}
+
+// writeErrorResponse writes an error response appropriate for the protocol.
+func writeErrorResponse(w http.ResponseWriter, err error, isGRPC bool) {
+	if isGRPC {
+		grpcStatus := "14" // UNAVAILABLE
+		if strings.Contains(err.Error(), "timeout") {
+			grpcStatus = "4" // DEADLINE_EXCEEDED
+		}
+		w.Header().Set("Content-Type", "application/grpc")
+		w.Header().Set("Grpc-Status", grpcStatus)
+		w.Header().Set("Grpc-Message", fmt.Sprintf("Proxy Error: %v", err))
+		w.WriteHeader(http.StatusOK)
+	} else {
+		http.Error(w, fmt.Sprintf("Bad Gateway: %v", err), http.StatusBadGateway)
+	}
+}
+
 // proxyErrorHandler creates the error handler function for the reverse proxy.
 func proxyErrorHandler(isGRPC bool) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, r *http.Request, err error) {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			logger.LogDebug(
-				"Request canceled by client",
-				logrus.Fields{"method": r.Method, "path": r.URL.Path, "error": err.Error()},
-			)
+		// Handle context errors (cancellation or timeout)
+		if handleContextError(w, r, err, isGRPC) {
 			return
 		}
 
-		// Downgrade noisy benign errors
-		errStr := err.Error()
-		if strings.Contains(errStr, "read on closed response body") ||
-			strings.Contains(errStr, "connection reset by peer") {
-			logger.LogDebug("Upstream closed connection", logrus.Fields{
-				"method": r.Method, "path": r.URL.Path, "error": errStr,
-			})
+		// Handle benign connection errors
+		if handleBenignConnectionError(w, r, err) {
 			return
 		}
 
-		if isRetryableError(err) {
-			logger.LogError("Connection failed after retries", err)
-		} else {
-			logger.LogProxyError(r.Method, r.URL.Path, err)
-		}
+		// Log the proxy error
+		logProxyError(r, err)
 
-		if isGRPC {
-			grpcStatus := "14" // UNAVAILABLE
-			if strings.Contains(err.Error(), "timeout") {
-				grpcStatus = "4" // DEADLINE_EXCEEDED
-			}
-			w.Header().Set("Content-Type", "application/grpc")
-			w.Header().Set("Grpc-Status", grpcStatus)
-			w.Header().Set("Grpc-Message", fmt.Sprintf("Proxy Error: %v", err))
-			w.WriteHeader(http.StatusOK)
-		} else {
-			http.Error(w, fmt.Sprintf("Bad Gateway: %v", err), http.StatusBadGateway)
-		}
+		// Write the appropriate error response
+		writeErrorResponse(w, err, isGRPC)
 	}
 }
 

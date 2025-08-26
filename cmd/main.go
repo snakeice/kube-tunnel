@@ -23,7 +23,7 @@ func main() {
 		help      = flag.Bool("help", false, "Show help message")
 		verbose   = flag.Bool("verbose", false, "Enable verbose/debug logging")
 		quiet     = flag.Bool("quiet", false, "Enable quiet mode (errors only)")
-		virtual   = flag.Bool("virtual", false, "Enable virtual interface mode")
+		virtual   = flag.Bool("virtual", true, "Enable virtual interface mode")
 		virtualIP = flag.String(
 			"virtual-ip",
 			"",
@@ -71,6 +71,14 @@ func main() {
 		os.Exit(1)
 	}
 	conf := container.Cfg
+
+	// Log timeout configuration for troubleshooting
+	logger.Log.Infof("⏱️  Timeout configuration: Proxy=%s, ResponseHeader=%s, Read=%s, Write=%s",
+		conf.Performance.ProxyTimeout,
+		conf.Performance.ResponseHeaderTimeout,
+		conf.Performance.ReadTimeout,
+		conf.Performance.WriteTimeout)
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	mux := container.Mux

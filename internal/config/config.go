@@ -11,9 +11,12 @@ import (
 )
 
 const (
-	Kb                 = 1024
-	Mb                 = 1024 * Kb
-	dummyInterfaceType = "dummy"
+	Kb = 1024
+	Mb = 1024 * Kb
+
+	// Default IP addresses.
+	defaultDNSIP         = "10.8.0.1"
+	defaultPortForwardIP = "10.8.0.2"
 )
 
 type Config struct {
@@ -33,6 +36,8 @@ type PerformanceConfig struct {
 	ReadTimeout                  time.Duration
 	WriteTimeout                 time.Duration
 	IdleTimeout                  time.Duration
+	ResponseHeaderTimeout        time.Duration
+	ProxyTimeout                 time.Duration // Overall proxy request timeout
 	MaxConcurrentStreams         uint32
 	MaxFrameSize                 uint32
 	MaxUploadBufferPerConnection int32
@@ -52,7 +57,9 @@ type NetworkConfig struct {
 	UseVirtualInterface  bool
 	VirtualInterfaceName string
 	VirtualInterfaceIP   string
-	InterfaceType        string // "dummy" only
+
+	PortForwardInterfaceName string
+	PortForwardInterfaceIP   string
 
 	// DNS configuration
 	DNSBindIP string
@@ -104,9 +111,11 @@ func createDefaultPerformanceConfig() PerformanceConfig {
 		MaxIdleConns:                 200,
 		MaxIdleConnsPerHost:          50,
 		MaxConnsPerHost:              100,
-		ReadTimeout:                  30 * time.Second,
-		WriteTimeout:                 30 * time.Second,
+		ReadTimeout:                  120 * time.Second, // Increased to handle slow requests
+		WriteTimeout:                 120 * time.Second, // Increased to handle slow responses
 		IdleTimeout:                  120 * time.Second,
+		ResponseHeaderTimeout:        30 * time.Second, // Keep shorter for transport
+		ProxyTimeout:                 60 * time.Second, // Overall proxy request timeout
 		MaxConcurrentStreams:         1000,
 		MaxFrameSize:                 512 * Kb,
 		GRPCTimeout:                  "30S",
@@ -127,14 +136,18 @@ func createDefaultHealthConfig() HealthConfig {
 
 // createDefaultNetworkConfig creates the default network configuration.
 func createDefaultNetworkConfig() NetworkConfig {
-	virtualIP := "10.8.0.1"
+	dnsIP := defaultDNSIP
+	portForwardIP := defaultPortForwardIP
 	return NetworkConfig{
 		UseVirtualInterface:  true,
-		VirtualInterfaceName: "kube-dummy0",
-		VirtualInterfaceIP:   virtualIP,
-		InterfaceType:        dummyInterfaceType,
-		DNSBindIP:            virtualIP,
-		PortForwardBindIP:    virtualIP,
+		VirtualInterfaceName: "kube-dns0", // DNS interface for service resolution
+		VirtualInterfaceIP:   dnsIP,
+
+		PortForwardInterfaceName: "kube-proxy0", // Port-forward interface for kubectl sessions
+		PortForwardInterfaceIP:   portForwardIP,
+
+		DNSBindIP:         dnsIP,
+		PortForwardBindIP: portForwardIP,
 		CustomIPRanges: []string{
 			"10.8.0.0/24",
 			"10.9.0.0/24",
@@ -161,6 +174,11 @@ func applyPerformanceOverrides(perf PerformanceConfig) PerformanceConfig {
 	perf.ReadTimeout = getEnvDuration("KTUN_READ_TIMEOUT", perf.ReadTimeout)
 	perf.WriteTimeout = getEnvDuration("KTUN_WRITE_TIMEOUT", perf.WriteTimeout)
 	perf.IdleTimeout = getEnvDuration("KTUN_IDLE_TIMEOUT", perf.IdleTimeout)
+	perf.ResponseHeaderTimeout = getEnvDuration(
+		"KTUN_RESPONSE_HEADER_TIMEOUT",
+		perf.ResponseHeaderTimeout,
+	)
+	perf.ProxyTimeout = getEnvDuration("KTUN_PROXY_TIMEOUT", perf.ProxyTimeout)
 	perf.MaxConcurrentStreams = getEnvUint32("KTUN_MAX_STREAMS", perf.MaxConcurrentStreams)
 	perf.MaxFrameSize = getEnvUint32("KTUN_MAX_FRAME", perf.MaxFrameSize)
 	perf.MaxUploadBufferPerConnection = getEnvInt32(
@@ -203,13 +221,12 @@ func applyNetworkOverrides(network NetworkConfig) NetworkConfig {
 		network.VirtualInterfaceIP = val
 	}
 
-	// Interface type validation - only allow dummy
-	if val := os.Getenv("KTUN_INTERFACE_TYPE"); val != "" {
-		if val == dummyInterfaceType {
-			network.InterfaceType = val
-		} else {
-			logger.Log.Warnf("Invalid interface type '%s', using default '%s'", val, dummyInterfaceType)
-		}
+	// Port-forward interface overrides (always enabled when virtual interfaces are enabled)
+	if val := os.Getenv("KTUN_PF_VIRTUAL_NAME"); val != "" {
+		network.PortForwardInterfaceName = val
+	}
+	if val := os.Getenv("KTUN_PF_VIRTUAL_IP"); val != "" {
+		network.PortForwardInterfaceIP = val
 	}
 
 	// Custom IP ranges for finding free IPs
@@ -266,15 +283,128 @@ func validateHealthConfig(health HealthConfig) HealthConfig {
 
 // validateNetworkConfig validates network configuration values.
 func validateNetworkConfig(network NetworkConfig) NetworkConfig {
-	if network.InterfaceType != dummyInterfaceType {
-		logger.Log.Warnf(
-			"Invalid interface type: %s, using default '%s'",
-			network.InterfaceType,
-			dummyInterfaceType,
-		)
-		network.InterfaceType = dummyInterfaceType
+	network = validateDNSConfig(network)
+	network = validatePortForwardConfig(network)
+	network = validateVirtualInterfaceConfig(network)
+	network = validateIPRanges(network)
+	return network
+}
+
+// validateDNSConfig validates DNS-related configuration.
+func validateDNSConfig(network NetworkConfig) NetworkConfig {
+	// Validate DNS bind IP format
+	if network.DNSBindIP == "" {
+		network.DNSBindIP = defaultDNSIP
+	} else if !isValidIP(network.DNSBindIP) {
+		logger.Log.Warn("Invalid DNS bind IP format, using default", "ip", network.DNSBindIP)
+		network.DNSBindIP = defaultDNSIP
 	}
 	return network
+}
+
+// validatePortForwardConfig validates port forwarding configuration.
+func validatePortForwardConfig(network NetworkConfig) NetworkConfig {
+	// Validate port forward bind IP format
+	if network.PortForwardBindIP == "" {
+		network.PortForwardBindIP = defaultPortForwardIP
+	} else if !isValidIP(network.PortForwardBindIP) {
+		logger.Log.Warn("Invalid port forward bind IP format, using default", "ip", network.PortForwardBindIP)
+		network.PortForwardBindIP = defaultPortForwardIP
+	}
+
+	// Validate port forward interface name
+	if network.PortForwardInterfaceName == "" {
+		network.PortForwardInterfaceName = "kube-proxy0"
+	}
+
+	// Validate port forward interface IP format
+	if network.PortForwardInterfaceIP == "" {
+		network.PortForwardInterfaceIP = network.PortForwardBindIP
+	} else if !isValidIP(network.PortForwardInterfaceIP) {
+		logger.Log.Warn("Invalid port forward interface IP format, using port forward bind IP",
+			"ip", network.PortForwardInterfaceIP)
+		network.PortForwardInterfaceIP = network.PortForwardBindIP
+	}
+	return network
+}
+
+// validateVirtualInterfaceConfig validates virtual interface configuration.
+func validateVirtualInterfaceConfig(network NetworkConfig) NetworkConfig {
+	// Validate virtual interface name
+	if network.UseVirtualInterface && network.VirtualInterfaceName == "" {
+		network.VirtualInterfaceName = "kube-dns0"
+	}
+
+	// Validate virtual interface IP format
+	if network.UseVirtualInterface && network.VirtualInterfaceIP == "" {
+		network.VirtualInterfaceIP = network.DNSBindIP
+	} else if network.UseVirtualInterface && !isValidIP(network.VirtualInterfaceIP) {
+		logger.Log.Warn("Invalid virtual interface IP format, using DNS bind IP", "ip", network.VirtualInterfaceIP)
+		network.VirtualInterfaceIP = network.DNSBindIP
+	}
+	return network
+}
+
+// validateIPRanges validates IP range configuration.
+func validateIPRanges(network NetworkConfig) NetworkConfig {
+	defaultRanges := []string{"10.8.0.0/24", "10.9.0.0/24"}
+
+	if len(network.CustomIPRanges) == 0 {
+		network.CustomIPRanges = defaultRanges
+		return network
+	}
+
+	validRanges := make([]string, 0, len(network.CustomIPRanges))
+	for _, cidr := range network.CustomIPRanges {
+		if isValidCIDR(cidr) {
+			validRanges = append(validRanges, cidr)
+		} else {
+			logger.Log.Warn("Invalid CIDR format, skipping", "cidr", cidr)
+		}
+	}
+
+	if len(validRanges) == 0 {
+		logger.Log.Warn("No valid CIDR ranges found, using defaults")
+		network.CustomIPRanges = defaultRanges
+	} else {
+		network.CustomIPRanges = validRanges
+	}
+
+	return network
+}
+
+// isValidIP validates IP address format.
+func isValidIP(ip string) bool {
+	parts := strings.Split(ip, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, part := range parts {
+		if num, err := strconv.Atoi(part); err != nil || num < 0 || num > 255 {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidCIDR validates CIDR notation format.
+func isValidCIDR(cidr string) bool {
+	parts := strings.Split(cidr, "/")
+	if len(parts) != 2 {
+		return false
+	}
+
+	// Validate IP part
+	if !isValidIP(parts[0]) {
+		return false
+	}
+
+	// Validate prefix length
+	if prefix, err := strconv.Atoi(parts[1]); err != nil || prefix < 0 || prefix > 32 {
+		return false
+	}
+
+	return true
 }
 
 // validateProxyConfig validates proxy configuration values.

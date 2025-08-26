@@ -62,15 +62,23 @@ grpcurl api.default.svc.cluster.local:80 list
 curl -k https://secure-service.default.svc.cluster.local/health
 ```
 
-### 🔌 Enhanced Port Handling
+### 🔌 Enhanced Dual Virtual Interface Architecture
 
-With virtual interface enabled, you can access services on **ANY port**:
+With virtual interface enabled, kube-tunnel automatically creates **two dedicated virtual interfaces** for optimal performance and conflict resolution:
 
 ```bash
-# Enable virtual interface (creates 10.8.0.1 by default)
-KTUN_USE_VIRTUAL=true ./kube-tunnel
+# Enable virtual interface mode (creates both interfaces automatically)
+./kube-tunnel -virtual
 
-# Now access services on their actual ports
+# Both interfaces created:
+# • kube-dns0    (10.8.0.1) - DNS resolution for *.svc.cluster.local
+# • kube-proxy0  (10.8.0.2) - Port forwarding to Kubernetes services
+```
+
+Now access services on **ANY port** without conflicts:
+
+```bash
+# Access services on their actual ports
 curl http://frontend.default.svc.cluster.local:3000/
 curl http://api.default.svc.cluster.local:8080/health
 curl http://metrics.monitoring.svc.cluster.local:9090/metrics
@@ -79,10 +87,18 @@ curl http://metrics.monitoring.svc.cluster.local:9090/metrics
 grpcurl -plaintext grpc-service.default.svc.cluster.local:50051 list
 ```
 
+**Architecture Benefits:**
+
+- 🎯 **DNS Interface** (`kube-dns0`) — Dedicated for DNS resolution of Kubernetes services
+- 🔌 **Proxy Interface** (`kube-proxy0`) — Dedicated for kubectl port-forward sessions
+- 🚫 **No Port Conflicts** — Universal port handler redirects traffic efficiently  
+- ⚡ **Auto Port Matching** — Tries to match requested ports, falls back gracefully
+- 📝 **Clear Separation** — Each interface has a single, focused responsibility
+
 The system automatically:
 
 - 🎯 **Tries to match ports** — Uses the same port for Kubernetes port-forwarding when available
-- 🔄 **Falls back gracefully** — Uses random ports when requested port is unavailable
+- 🔄 **Falls back gracefully** — Uses random ports when requested port is unavailable  
 - 📝 **Logs port mapping** — Shows which ports were matched vs. assigned
 
 1. **Monitor status** via built-in dashboard:
@@ -133,16 +149,31 @@ export KTUN_WRITE_TIMEOUT=30s           # Write timeout
 export KTUN_GRPC_TIMEOUT="30S"          # Timeout for gRPC requests
 ```
 
-#### � Network & Virtual Interface
+#### 🌐 Network & Virtual Interface Configuration
 
 ```bash
+# Core Network Settings
 export KTUN_DNS_IP=127.0.0.1            # DNS server bind IP
 export KTUN_FORWARD_IP=127.0.0.1        # Port forward bind IP
-export KTUN_USE_VIRTUAL=true            # Enable virtual interface
-export KTUN_VIRTUAL_NAME=kube-dummy0    # Virtual interface name
-export KTUN_VIRTUAL_IP=127.0.0.10       # Virtual interface IP
-export KTUN_IP_RANGES="127.0.0.0/24,127.1.0.0/16"  # Custom IP ranges
+export KTUN_USE_VIRTUAL=true            # Enable dual virtual interface mode
+
+# DNS Virtual Interface (for DNS resolution)
+export KTUN_VIRTUAL_NAME=kube-dns0      # DNS interface name
+export KTUN_VIRTUAL_IP=10.8.0.1         # DNS interface IP
+
+# Port-Forward Virtual Interface (for kubectl port-forwards)
+export KTUN_PF_VIRTUAL_NAME=kube-proxy0 # Port-forward interface name  
+export KTUN_PF_VIRTUAL_IP=10.8.0.2      # Port-forward interface IP
+
+# IP Range Configuration
+export KTUN_IP_RANGES="10.8.0.0/24,10.9.0.0/24"  # Custom IP ranges for allocation
 ```
+
+> **🔧 Dual Interface Mode**: When `KTUN_USE_VIRTUAL=true`, both interfaces are automatically created:
+>
+> - **DNS Interface** handles `*.svc.cluster.local` resolution  
+> - **Port-Forward Interface** handles kubectl port-forward sessions
+> - **No configuration required** — Works out of the box with smart defaults!
 
 #### 🔄 Retry Configuration
 
@@ -164,21 +195,50 @@ export LOG_LEVEL=debug                  # Enable debug logging
 #### 🔄 Quick Configuration Examples
 
 ```bash
-# Basic setup with virtual interface
+# Basic setup with dual virtual interfaces (recommended)
 export KTUN_USE_VIRTUAL=true
-export KTUN_VIRTUAL_IP=10.8.0.1
+./kube-tunnel
+# Creates: kube-dns0 (10.8.0.1) + kube-proxy0 (10.8.0.2)
+
+# Custom interface names and IPs
+export KTUN_USE_VIRTUAL=true
+export KTUN_VIRTUAL_NAME=my-dns-if
+export KTUN_VIRTUAL_IP=192.168.100.10
+export KTUN_PF_VIRTUAL_NAME=my-proxy-if  
+export KTUN_PF_VIRTUAL_IP=192.168.100.11
 ./kube-tunnel
 
 # Performance optimized setup
+export KTUN_USE_VIRTUAL=true
 export KTUN_MAX_IDLE=500
 export KTUN_MAX_CONNS_HOST=200
 export KTUN_FORCE_HTTP2=true
 ./kube-tunnel
 
 # Development with extensive logging
+export KTUN_USE_VIRTUAL=true
 export LOG_LEVEL=debug
 export KTUN_HEALTH_ENABLED=false
 ./kube-tunnel
+```
+
+### 🔍 Verifying Virtual Interfaces
+
+When virtual interface mode is enabled, you can verify the interfaces were created correctly:
+
+```bash
+# Check both virtual interfaces are created
+ip addr show | grep -E "(kube-dns0|kube-proxy0)"
+
+# Expected output:
+# 47: kube-dns0: <BROADCAST,NOARP,UP,LOWER_UP> ... inet 10.8.0.1/24 scope global kube-dns0
+# 48: kube-proxy0: <BROADCAST,NOARP,UP,LOWER_UP> ... inet 10.8.0.2/24 scope global kube-proxy0
+
+# Check DNS configuration
+resolvectl status | grep -A 5 kube-dns0
+
+# Test DNS resolution
+dig @10.8.0.1 api.default.svc.cluster.local
 ```
 
 ## 🔧 How It Works
@@ -201,9 +261,10 @@ graph TB
         B5[� Health Monitor]
     end
 
-    subgraph "Virtual Interface"
-        C1[�🌐 Virtual DNS<br/>10.8.0.1]
-        C2[📡 Enhanced Port Handler<br/>ANY:PORT]
+    subgraph "Dual Virtual Interface Architecture"
+        C1[🌐 DNS Interface<br/>kube-dns0 (10.8.0.1)]
+        C2[� Port-Forward Interface<br/>kube-proxy0 (10.8.0.2)]
+        C3[📡 Universal Port Handler<br/>ANY:PORT → 10.8.0.2:80]
     end
 
     subgraph "Kubernetes Cluster"
@@ -227,8 +288,10 @@ graph TB
     D2 --> D3
     D3 --> D4
 
-    B2 -.->|Virtual Interface Enabled| C1
-    C1 --> C2
+    B2 -.->|Dual Interface Mode| C1
+    C1 -.->|DNS Resolution| B1
+    C1 -.->|Port Redirection| C3
+    C3 --> C2
     C2 --> D3
 
     B3 -.->|Monitor| B5
@@ -435,6 +498,33 @@ export KTUN_USE_VIRTUAL=true
 export KTUN_IP_RANGES="127.0.0.0/24,10.0.0.0/24"
 ./kube-tunnel
 ```
+
+## ✨ Architecture Highlights
+
+### 🔧 Dual Virtual Interface Design
+
+kube-tunnel now features an intelligent **dual virtual interface architecture** that eliminates port conflicts and optimizes performance:
+
+```bash
+# Automatic Interface Creation (when KTUN_USE_VIRTUAL=true)
+kube-dns0    (10.8.0.1)  # DNS resolution for *.svc.cluster.local  
+kube-proxy0  (10.8.0.2)  # kubectl port-forward sessions
+```
+
+**Key Benefits:**
+
+- ✅ **Zero Port Conflicts** — DNS and port-forwarding use dedicated interfaces
+- ✅ **Automatic Separation** — No manual configuration required  
+- ✅ **Intelligent Routing** — Universal port handler efficiently redirects traffic
+- ✅ **Clear Semantics** — Interface names reflect their specific purposes
+- ✅ **Enhanced Performance** — Optimized for both DNS resolution and port forwarding
+
+### 🚀 What's New
+
+- **Smart Interface Naming**: `kube-dns0` and `kube-proxy0` instead of generic dummy names
+- **Always-On Dual Mode**: When virtual interfaces are enabled, both are automatically created
+- **Conflict-Free Operation**: Separate IP spaces eliminate universal port handler conflicts
+- **Simplified Configuration**: No need for separate flags or complex setup
 
 ## 🤝 Contributing
 

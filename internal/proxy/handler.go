@@ -40,7 +40,40 @@ func (p *Proxy) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	isGRPC := isGRPCRequest(r)
 	protocolInfo := getProtocolInfo(r)
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	// Debug logging for request details
+	logger.LogDebug("🔍 Processing request", logrus.Fields{
+		"method":               r.Method,
+		"url":                  r.URL.String(),
+		"host":                 r.Host,
+		"headers":              fmt.Sprintf("%v", r.Header),
+		"remote_addr":          r.RemoteAddr,
+		"user_agent":           r.Header.Get("User-Agent"),
+		"has_context_deadline": func() bool { _, ok := r.Context().Deadline(); return ok }(),
+	})
+
+	// Create a timeout context, but ensure it doesn't override a longer client timeout
+	var ctx context.Context
+	var cancel context.CancelFunc
+
+	if deadline, ok := r.Context().Deadline(); ok {
+		// Client already has a deadline, respect it if it's longer than our timeout
+		proxyDeadline := time.Now().Add(p.cfg.Performance.ProxyTimeout)
+		logger.LogDebug("🕒 Client has deadline", logrus.Fields{
+			"client_deadline":          deadline,
+			"proxy_deadline":           proxyDeadline,
+			"will_use_client_deadline": deadline.After(proxyDeadline),
+		})
+		if deadline.After(proxyDeadline) {
+			// Client deadline is longer, use our timeout
+			ctx, cancel = context.WithTimeout(r.Context(), p.cfg.Performance.ProxyTimeout)
+		} else {
+			// Client deadline is shorter or similar, use client's context
+			ctx, cancel = context.WithCancel(r.Context())
+		}
+	} else {
+		// No client deadline, use our timeout
+		ctx, cancel = context.WithTimeout(r.Context(), p.cfg.Performance.ProxyTimeout)
+	}
 	defer cancel()
 	r = r.WithContext(ctx)
 
@@ -81,14 +114,6 @@ func (p *Proxy) setupPortForward(service, namespace string, r *http.Request) (st
 
 	// Try to use the same port for Kubernetes port-forwarding if available
 	if originalPort > 0 {
-		logger.LogDebug(
-			"Attempting port-forward with port hint",
-			logrus.Fields{
-				"service":   service,
-				"namespace": namespace,
-				"hint_port": originalPort,
-			},
-		)
 		localIP, localPort, err = p.cache.EnsurePortForwardWithHint(
 			service,
 			namespace,
@@ -101,25 +126,6 @@ func (p *Proxy) setupPortForward(service, namespace string, r *http.Request) (st
 	if err != nil {
 		return "", 0, err
 	}
-
-	// Log port mapping information
-	if originalPort > 0 {
-		logger.LogDebug(
-			"Port mapping result",
-			logrus.Fields{
-				"service":        service,
-				"namespace":      namespace,
-				"requested_port": originalPort,
-				"allocated_port": localPort,
-				"port_matched":   originalPort == localPort,
-				"local_ip":       localIP,
-			},
-		)
-	}
-	logger.LogDebug(
-		"Port-forward ready",
-		logrus.Fields{"service": service, "namespace": namespace, "ip": localIP, "port": localPort},
-	)
 
 	return localIP, localPort, nil
 }
@@ -150,20 +156,8 @@ func (p *Proxy) executeProxy(
 	requestSize int64,
 ) {
 	rp := createReverseProxy(localIP, localPort, isGRPC, responseWriter)
-	logger.LogDebug(
-		"Proxying with protocol fallback",
-		logrus.Fields{
-			"service":    service,
-			"namespace":  namespace,
-			"is_grpc":    isGRPC,
-			"local_ip":   localIP,
-			"local_port": localPort,
-		},
-	)
 
-	proxyStartTime := time.Now()
 	rp.ServeHTTP(responseWriter, r)
-	proxyDuration := time.Since(proxyStartTime)
 	totalDuration := time.Since(startTime)
 
 	p.recordMetrics(
@@ -174,8 +168,6 @@ func (p *Proxy) executeProxy(
 		isGRPC,
 		totalDuration,
 		requestSize,
-		localPort,
-		proxyDuration,
 	)
 }
 
@@ -187,8 +179,6 @@ func (p *Proxy) recordMetrics(
 	isGRPC bool,
 	totalDuration time.Duration,
 	requestSize int64,
-	localPort int,
-	proxyDuration time.Duration,
 ) {
 	// Store real request response time in health monitor for dashboard display
 	if p.health != nil && p.cache != nil {
@@ -213,13 +203,6 @@ func (p *Proxy) recordMetrics(
 		)
 	}
 
-	logger.LogProxyMetrics(
-		service,
-		namespace,
-		localPort,
-		proxyDuration,
-		responseWriter.statusCode < 400,
-	)
 	logger.LogResponseMetrics(
 		r.Method,
 		r.URL.Path,

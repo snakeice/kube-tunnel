@@ -53,25 +53,8 @@ func Build() (*Container, error) {
 		return nil, err
 	}
 
-	// Step 3: Update cache with virtual interface IP if it was created
-	if cfg.Network.UseVirtualInterface {
-		// Try to get the actual virtual interface IP from the DNS server
-		if actualIP := c.DNS.GetVirtualInterfaceIP(); actualIP != "" {
-			logger.Log.Infof("Virtual interface created with IP: %s", actualIP)
-
-			// Rebind DNS server to virtual interface IP
-			if err := c.DNS.RebindToVirtualInterface(actualIP); err != nil {
-				logger.Log.Warnf("Failed to rebind DNS server to virtual interface: %v", err)
-				logger.Log.Infof("DNS server will continue running on localhost")
-			} else {
-				logger.Log.Infof("DNS server successfully bound to virtual interface IP: %s", actualIP)
-			}
-
-			// Update the cache with the actual IP
-			c.Cache = cache.NewCacheWithIP(c.Monitor, cfg, actualIP)
-			logger.Log.Infof("Updated port forward IP to: %s", actualIP)
-		}
-	}
+	// Step 3: Update cache with port-forward IP if virtual interfaces were created
+	c.setupVirtualInterfacesIfEnabled(cfg)
 
 	c.Proxy = proxy.New(c.Cache, c.Monitor, cfg)
 
@@ -179,4 +162,39 @@ func (c *Container) Shutdown(ctx context.Context) error {
 
 	logger.Log.Info("Application shutdown completed successfully")
 	return nil
+}
+
+// setupVirtualInterfacesIfEnabled sets up virtual interfaces if enabled in the config
+// and updates the cache with the port-forward IP.
+func (c *Container) setupVirtualInterfacesIfEnabled(cfg *config.Config) {
+	if !cfg.Network.UseVirtualInterface {
+		return
+	}
+
+	portForwardIP := c.DNS.GetPortForwardIP()
+	if portForwardIP == "" || portForwardIP == "127.0.0.1" {
+		return
+	}
+
+	logger.Log.Infof("Port-forward IP configured: %s", portForwardIP)
+
+	// Get DNS interface IP for rebinding
+	dnsIP := c.DNS.GetVirtualInterfaceIP()
+	if dnsIP == "" {
+		return
+	}
+
+	logger.Log.Infof("DNS virtual interface created with IP: %s", dnsIP)
+
+	// Rebind DNS server to virtual interface IP
+	if err := c.DNS.RebindToVirtualInterface(dnsIP); err != nil {
+		logger.Log.Warnf("Failed to rebind DNS server to virtual interface: %v", err)
+		logger.Log.Infof("DNS server will continue running on localhost")
+	} else {
+		logger.Log.Infof("DNS server successfully bound to virtual interface IP: %s", dnsIP)
+	}
+
+	// Update the cache with the port-forward IP (may be different from DNS IP)
+	c.Cache = cache.NewCacheWithIP(c.Monitor, cfg, portForwardIP)
+	logger.Log.Infof("Updated cache with port forward IP: %s", portForwardIP)
 }

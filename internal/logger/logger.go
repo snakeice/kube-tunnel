@@ -207,13 +207,61 @@ func LogPortForwardReuse(service, namespace string, localPort int) {
 		"service":    service,
 		"namespace":  namespace,
 		"local_port": localPort,
-	}).Debug("♻️  Reusing port-forward")
+	}).Info("♻️  Reusing existing port-forward")
 }
 
 func LogPortForwardExpire(key string) {
 	Log.WithFields(logrus.Fields{
 		"session": key,
 	}).Info("⏰ Expiring idle port-forward")
+}
+
+func LogPortAllocation(service, namespace string, localIP string, localPort int, preferred bool) {
+	if preferred {
+		Log.WithFields(logrus.Fields{
+			"service":    service,
+			"namespace":  namespace,
+			"local_ip":   localIP,
+			"local_port": localPort,
+		}).Info("🎯 Using preferred port for port-forward")
+	} else {
+		Log.WithFields(logrus.Fields{
+			"service":    service,
+			"namespace":  namespace,
+			"local_ip":   localIP,
+			"local_port": localPort,
+		}).Info("🔍 Allocated free port for port-forward")
+	}
+}
+
+func LogPortForwardStarting(
+	service, namespace, pod string,
+	localIP string,
+	localPort, remotePort int,
+) {
+	Log.WithFields(logrus.Fields{
+		"service":     service,
+		"namespace":   namespace,
+		"pod":         pod,
+		"local_ip":    localIP,
+		"local_port":  localPort,
+		"remote_port": remotePort,
+	}).Info("🚀 Starting port-forward tunnel")
+}
+
+func LogPortForwardReady(
+	service, namespace string,
+	localIP string,
+	localPort int,
+	duration time.Duration,
+) {
+	Log.WithFields(logrus.Fields{
+		"service":    service,
+		"namespace":  namespace,
+		"local_ip":   localIP,
+		"local_port": localPort,
+		"setup_ms":   duration.Milliseconds(),
+	}).Info("✅ Port-forward tunnel ready")
 }
 
 // Remove LogProtocolDetection - this is too verbose for normal operation
@@ -294,13 +342,11 @@ func LogResponseMetrics(
 		"grpc":          isGRPC,
 	}
 
-	// Add performance indicators only for slow requests
 	if duration > 5*time.Second {
 		fields["performance"] = "slow"
 		level = logrus.WarnLevel // Log slow requests as warnings
 	}
 
-	// Only log if it's not a successful request or if it's slow
 	if statusCode >= 400 || duration > 5*time.Second {
 		Log.WithFields(fields).Log(level, emoji+" Response completed")
 	}
@@ -327,7 +373,7 @@ func LogProxyMetrics(
 
 	if success {
 		emoji = "🎯"
-		level = logrus.InfoLevel
+		level = logrus.DebugLevel
 	} else {
 		emoji = "💔"
 		level = logrus.ErrorLevel
@@ -350,14 +396,6 @@ func LogRetry(attempt int, delay string, err error) {
 	}).Warn("🔄 Retrying connection")
 }
 
-// Remove LogRetryWithTiming - consolidate into LogRetry
-
-func LogRetrySuccess(attempt int) {
-	Log.WithFields(logrus.Fields{
-		"attempt": attempt,
-	}).Info("✅ Connection successful after retry")
-}
-
 // Remove LogRetrySuccessWithTiming - consolidate into LogRetrySuccess
 
 func LogRetryFailed(totalAttempts int, err error) {
@@ -366,10 +404,6 @@ func LogRetryFailed(totalAttempts int, err error) {
 		"error":          err.Error(),
 	}).Error("🔴 Connection failed after all retries")
 }
-
-// Remove LogRetryFailedWithTiming - consolidate into LogRetryFailed
-
-// Remove LogBackendHealth - only log when there are actual health issues
 
 func LogConnectionCanceled(method, path string, attempt int) {
 	Log.WithFields(logrus.Fields{
