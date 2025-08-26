@@ -275,9 +275,10 @@ jobs:
           chmod +x scripts/perf-test.sh
           chmod +x scripts/health-demo.sh
 
-          # Test virtual interface script
+          # Test virtual interface script in a container with NET_ADMIN capability
           echo "🧪 Testing virtual interface script..."
-          ./scripts/test-virtual-interface.sh comprehensive
+          docker run --rm --cap-add=NET_ADMIN -v "$(pwd):/work" -w /work debian:bullseye-slim \
+            bash -c "apt-get update && apt-get install -y iproute2 netcat-openbsd && ./scripts/test-virtual-interface.sh comprehensive"
 
           # Create test deployment
           kubectl create deployment test-app --image=nginx:alpine
