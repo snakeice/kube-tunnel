@@ -2,129 +2,21 @@ package proxy
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/http2"
 
 	"github.com/snakeice/kube-tunnel/internal/config"
 	"github.com/snakeice/kube-tunnel/internal/logger"
-	"github.com/snakeice/kube-tunnel/internal/tools"
 )
 
-// NOTE: Legacy global singleton and handlers removed. All request handling
-// now goes through the struct in handler.go with injected dependencies.
-
-// responseWriterWrapper wraps http.ResponseWriter to capture metrics.
-type responseWriterWrapper struct {
-	http.ResponseWriter
-	statusCode   int
-	responseSize int64
-	written      bool
-}
-
-func (w *responseWriterWrapper) WriteHeader(statusCode int) {
-	if !w.written {
-		w.statusCode = statusCode
-		w.written = true
-	}
-	w.ResponseWriter.WriteHeader(statusCode)
-}
-
-func (w *responseWriterWrapper) Write(data []byte) (int, error) {
-	if !w.written {
-		w.WriteHeader(http.StatusOK)
-	}
-	n, err := w.ResponseWriter.Write(data)
-	w.responseSize += int64(n)
-	return n, err
-}
-
-// isGRPCRequest checks if the request is a gRPC request.
-func isGRPCRequest(r *http.Request) bool {
-	contentType := r.Header.Get("Content-Type")
-	// Check for gRPC content types and also check for gRPC-specific headers
-	return strings.HasPrefix(contentType, "application/grpc") ||
-		r.Header.Get("Grpc-Encoding") != "" ||
-		r.Header.Get("Grpc-Accept-Encoding") != "" ||
-		strings.Contains(r.Header.Get("User-Agent"), "grpc")
-}
-
-// getProtocolInfo returns detailed protocol information.
-func getProtocolInfo(r *http.Request) string {
-	protocol := r.Proto
-	if r.TLS != nil {
-		protocol += " (TLS)"
-		if r.TLS.NegotiatedProtocol != "" {
-			protocol += " ALPN:" + r.TLS.NegotiatedProtocol
-		}
-	} else {
-		protocol += " (cleartext)"
-	}
-
-	if isGRPCRequest(r) {
-		protocol += " gRPC"
-	}
-
-	return protocol
-}
-
-// createTransport creates an optimized transport for the target protocol.
-func createTransport(
-	cfg config.PerformanceConfig,
-	isHTTPS bool,
-	protocol string,
-) http.RoundTripper {
-	if protocol == "h2c" {
-		return &http2.Transport{
-			AllowHTTP: true,
-			DialTLS: func(network, addr string, _ *tls.Config) (net.Conn, error) {
-				return net.Dial(network, addr)
-			},
-			// Use configurable HTTP/2 settings
-			MaxHeaderListSize:  262144, // 256KB
-			DisableCompression: false,
-			ReadIdleTimeout:    cfg.ResponseHeaderTimeout, // Use configurable timeout
-			PingTimeout:        30 * time.Second,          // Increased from 15s
-		}
-	}
-
-	transport := &http.Transport{
-		MaxIdleConns:          cfg.MaxIdleConns,
-		MaxIdleConnsPerHost:   cfg.MaxIdleConnsPerHost,
-		MaxConnsPerHost:       cfg.MaxConnsPerHost,
-		IdleConnTimeout:       cfg.IdleTimeout,
-		TLSHandshakeTimeout:   5 * time.Second,         // Keep optimized
-		ExpectContinueTimeout: 1500 * time.Millisecond, // Keep optimized
-		DisableCompression:    false,
-		ForceAttemptHTTP2:     cfg.ForceHTTP2,
-		ResponseHeaderTimeout: cfg.ResponseHeaderTimeout, // Use configurable timeout
-		DisableKeepAlives:     false,
-	}
-
-	if isHTTPS {
-		transport.TLSClientConfig = loadTLSConfig()
-	}
-
-	return transport
-}
-
-// getRetryConfig returns retry configuration from the centralized config.
-func getRetryConfig() (int, time.Duration) {
-	cfg := config.GetConfig()
-	return cfg.Proxy.MaxRetries, cfg.Proxy.RetryDelay
-}
-
-// minDuration returns the smaller of two time.Duration values.
 func minDuration(a, b time.Duration) time.Duration {
 	if a < b {
 		return a
@@ -132,7 +24,6 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-// retryableTransport wraps a transport with retry logic for connection failures.
 type retryableTransport struct {
 	base       http.RoundTripper
 	maxRetries int
@@ -143,7 +34,6 @@ type retryableTransport struct {
 func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var lastErr error
 
-	// Log initial attempt
 	logger.LogRetryAttempt(0, rt.maxRetries, req.Method, req.URL.Path, rt.isGRPC)
 
 	retryCtx, retryCancel := rt.createRetryContext(req.Context())
@@ -312,7 +202,7 @@ func (rt *retryableTransport) waitBeforeRetry(
 		rt.baseDelay*time.Duration(1<<attempt),
 		1*time.Second)
 
-	logger.LogRetry(attempt+1, delay.String(), nil)
+	logger.LogRetry(attempt+1, delay.String())
 
 	select {
 	case <-retryCtx.Done():
@@ -375,7 +265,7 @@ func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Respon
 		if !pft.isGRPC {
 			protocol = "http/1.1"
 		}
-		transport := createTransport(pft.config, false, protocol)
+		transport := createTransport(pft.config, false, protocol, pft.ip, pft.port)
 		retryTransport := &retryableTransport{
 			base:       transport,
 			maxRetries: pft.maxRetries,
@@ -385,9 +275,12 @@ func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Respon
 		return retryTransport.RoundTrip(req)
 	}
 
-	protocols := []string{"h2c", "http/1.1"}
-	if !pft.isGRPC {
-		protocols = []string{"http/1.1", "h2c"}
+	// For non-gRPC requests, only use HTTP/1.1 to ensure proper chunked transfer encoding
+	// HTTP/2 doesn't use chunked encoding and can cause issues with large responses
+	protocols := []string{"http/1.1"}
+	if pft.isGRPC {
+		// For gRPC, prefer h2c but fallback to HTTP/1.1
+		protocols = []string{"h2c", "http/1.1"}
 	}
 
 	var lastErr error
@@ -399,7 +292,7 @@ func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Respon
 			"attempt":  protocol,
 		})
 
-		transport := createTransport(pft.config, false, protocol)
+		transport := createTransport(pft.config, false, protocol, pft.ip, pft.port)
 		retryTransport := &retryableTransport{
 			base:       transport,
 			maxRetries: pft.maxRetries,
@@ -434,206 +327,6 @@ func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Respon
 	return nil, lastErr
 }
 
-// createProtocolFallbackTransport creates a transport that tries multiple protocols.
-func createProtocolFallbackTransport(ip string, port int, isGRPC bool) http.RoundTripper {
-	maxRetries, baseDelay := getRetryConfig()
-
-	return &protocolFallbackTransport{
-		ip:         ip,
-		port:       port,
-		isGRPC:     isGRPC,
-		maxRetries: maxRetries,
-		baseDelay:  baseDelay,
-		config:     config.GetConfig().Performance,
-	}
-}
-
-// handleCORS sets CORS headers and handles preflight requests.
-// It returns true if the request was a preflight request and has been handled.
-func handleCORS(w http.ResponseWriter, r *http.Request) bool {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().
-		Set("Access-Control-Allow-Headers", "Content-Type, Authorization, grpc-timeout, grpc-encoding, grpc-accept-encoding")
-
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return true
-	}
-	return false
-}
-
-// parseAndValidateHost parses the service and namespace from the request host.
-// It writes an error response if parsing fails.
-func parseAndValidateHost(
-	w http.ResponseWriter,
-	r *http.Request,
-	isGRPC bool,
-) (string, string, error) {
-	service, namespace, err := tools.ParseHost(r.Host)
-	if err != nil {
-		logger.LogError(fmt.Sprintf("Failed to parse host '%s'", r.Host), err)
-		if isGRPC {
-			w.Header().Set("Content-Type", "application/grpc")
-			w.Header().Set("Grpc-Status", "3") // INVALID_ARGUMENT
-			w.Header().Set("Grpc-Message", "Invalid host format")
-			w.WriteHeader(http.StatusOK)
-		} else {
-			http.Error(w, "Invalid host format", http.StatusBadRequest)
-		}
-		return "", "", err
-	}
-	return service, namespace, nil
-}
-
-// setGRPCHeaders sets the necessary headers for a gRPC request.
-func setGRPCHeaders(req *http.Request) {
-	if req.Header.Get("TE") == "" {
-		req.Header.Set("TE", "trailers")
-	}
-	cfg := config.GetConfig()
-	req.Header.Set("Grpc-Timeout", cfg.Performance.GRPCTimeout)
-	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", "kube-tunnel-grpc/1.0")
-	}
-	if !strings.HasPrefix(req.Header.Get("Content-Type"), "application/grpc") {
-		req.Header.Set("Content-Type", "application/grpc+proto")
-	}
-}
-
-// proxyDirector creates the director function for the reverse proxy.
-func proxyDirector(localIP string, localPort int, isGRPC bool) func(*http.Request) {
-	return func(req *http.Request) {
-		// Store original host for logging
-		originalHost := req.Host
-
-		req.URL.Scheme = "http"
-		req.URL.Host = fmt.Sprintf("%s:%d", localIP, localPort)
-
-		// Remove problematic headers that can cause connection issues
-		req.Header.Del("Connection")
-		req.Header.Del("Proxy-Connection")
-		req.Header.Del("Upgrade")
-
-		if deadline, ok := req.Context().Deadline(); ok {
-			req.Header.Set("X-Request-Deadline", deadline.Format(time.RFC3339))
-		}
-
-		// Add request ID for tracking
-		if req.Header.Get("X-Request-Id") == "" {
-			req.Header.Set("X-Request-Id", strconv.FormatInt(time.Now().UnixNano(), 10))
-		}
-
-		if isGRPC {
-			setGRPCHeaders(req)
-		}
-
-		logger.LogDebug("Proxy director", logrus.Fields{
-			"method":        req.Method,
-			"path":          req.URL.Path,
-			"original_host": originalHost,
-			"target_host":   req.URL.Host,
-			"protocol":      req.Proto,
-			"grpc":          isGRPC,
-			"request_id":    req.Header.Get("X-Request-Id"),
-		})
-
-		logger.LogProxy(req.Method, req.URL.Path, req.Proto, "auto-detect", isGRPC)
-	}
-}
-
-// proxyModifyResponse creates the modify response function for the reverse proxy.
-func proxyModifyResponse(w *responseWriterWrapper, isGRPC bool) func(*http.Response) error {
-	return func(resp *http.Response) error {
-		w.statusCode = resp.StatusCode
-		if resp.ContentLength > 0 {
-			w.responseSize = resp.ContentLength
-		}
-
-		if isGRPC {
-			if resp.Header.Get("Content-Type") == "" {
-				resp.Header.Set("Content-Type", "application/grpc+proto")
-			}
-			if resp.Header.Get("Grpc-Status") == "" && resp.StatusCode == http.StatusOK {
-				resp.Header.Set("Grpc-Status", "0") // OK
-			}
-		}
-		return nil
-	}
-}
-
-// handleContextError handles context.Canceled and context.DeadlineExceeded errors.
-// Returns true if the error was handled.
-func handleContextError(w http.ResponseWriter, r *http.Request, err error, isGRPC bool) bool {
-	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-
-	logger.LogDebug(
-		"Request canceled or timed out",
-		logrus.Fields{
-			"method": r.Method,
-			"path":   r.URL.Path,
-			"error":  err.Error(),
-			"grpc":   isGRPC,
-		},
-	)
-
-	// For context cancellation, don't write error response as client may have disconnected
-	if errors.Is(err, context.Canceled) {
-		return true
-	}
-
-	// For deadline exceeded, send appropriate timeout response
-	handleTimeoutResponse(w, isGRPC)
-	return true
-}
-
-// handleBenignConnectionError handles common connection closure errors.
-// Returns true if the error was handled.
-func handleBenignConnectionError(_ http.ResponseWriter, r *http.Request, err error) bool {
-	errStr := err.Error()
-	if !strings.Contains(errStr, "read on closed response body") &&
-		!strings.Contains(errStr, "connection reset by peer") {
-		return false
-	}
-
-	logger.LogDebug("Upstream closed connection", logrus.Fields{
-		"method":               r.Method,
-		"path":                 r.URL.Path,
-		"error":                errStr,
-		"remote_addr":          r.RemoteAddr,
-		"request_id":           r.Header.Get("X-Request-Id"),
-		"connection_lifecycle": "reset/closed",
-	})
-	return true
-} // logProxyError logs the appropriate error based on whether it's retryable.
-func logProxyError(r *http.Request, err error) {
-	errStr := err.Error()
-
-	if isRetryableError(err) {
-		logger.LogError("Connection failed after retries", err)
-		logger.LogDebug("Proxy retryable error", logrus.Fields{
-			"method":               r.Method,
-			"path":                 r.URL.Path,
-			"error":                errStr,
-			"remote_addr":          r.RemoteAddr,
-			"request_id":           r.Header.Get("X-Request-Id"),
-			"connection_lifecycle": "retryable",
-		})
-	} else {
-		logger.LogProxyError(r.Method, r.URL.Path, err)
-		logger.LogDebug("Proxy non-retryable error", logrus.Fields{
-			"method":               r.Method,
-			"path":                 r.URL.Path,
-			"error":                errStr,
-			"remote_addr":          r.RemoteAddr,
-			"request_id":           r.Header.Get("X-Request-Id"),
-			"connection_lifecycle": "non-retryable",
-		})
-	}
-}
-
 // handleTimeoutResponse writes a timeout response appropriate for the protocol.
 func handleTimeoutResponse(w http.ResponseWriter, isGRPC bool) {
 	if isGRPC {
@@ -662,86 +355,277 @@ func writeErrorResponse(w http.ResponseWriter, err error, isGRPC bool) {
 	}
 }
 
-// proxyErrorHandler creates the error handler function for the reverse proxy.
-func proxyErrorHandler(isGRPC bool) func(http.ResponseWriter, *http.Request, error) {
-	return func(w http.ResponseWriter, r *http.Request, err error) {
-		// Handle context errors (cancellation or timeout)
-		if handleContextError(w, r, err, isGRPC) {
-			return
-		}
+type CustomReverseProxy struct {
+	targetIP   string
+	targetPort int
+	isGRPC     bool
+	transport  http.RoundTripper
+	bufferPool *bufferPool
+	connPool   *connectionPool
+}
 
-		// Handle benign connection errors
-		if handleBenignConnectionError(w, r, err) {
-			return
-		}
+// Connection Pool Management
 
-		// Log the proxy error
-		logProxyError(r, err)
+type connectionPool struct {
+	connections chan net.Conn
+	maxSize     int
+	targetAddr  string
+}
 
-		// Write the appropriate error response
-		writeErrorResponse(w, err, isGRPC)
+// newConnectionPool creates a new connection pool.
+func newConnectionPool(targetIP string, targetPort int, maxSize int) *connectionPool {
+	var targetAddr string
+	if strings.Contains(targetIP, ":") {
+		// IPv6 address - needs brackets
+		targetAddr = fmt.Sprintf("[%s]:%d", targetIP, targetPort)
+	} else {
+		// IPv4 address
+		targetAddr = fmt.Sprintf("%s:%d", targetIP, targetPort)
+	}
+
+	return &connectionPool{
+		connections: make(chan net.Conn, maxSize),
+		maxSize:     maxSize,
+		targetAddr:  targetAddr,
 	}
 }
 
-// createReverseProxy configures and returns a new httputil.ReverseProxy.
+// ServeHTTP implements the http.Handler interface, making it a drop-in replacement for httputil.ReverseProxy.
+func (crp *CustomReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Ultra-fast path: skip CORS for internal requests
+	if r.Header.Get("X-Internal-Request") == "" && handleCORS(w, r) {
+		return
+	}
+
+	// Pre-computed target URL format (cached in struct for better performance)
+	targetURL := *r.URL
+	targetURL.Scheme = "http"
+	if strings.Contains(crp.targetIP, ":") {
+		targetURL.Host = fmt.Sprintf("[%s]:%d", crp.targetIP, crp.targetPort)
+	} else {
+		targetURL.Host = fmt.Sprintf("%s:%d", crp.targetIP, crp.targetPort)
+	}
+
+	// Minimal request creation
+	backendReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), r.Body)
+	if err != nil {
+		crp.handleError(w, r, fmt.Errorf("failed to create backend request: %w", err))
+		return
+	}
+
+	// Ultra-fast header copying (skip unnecessary headers)
+	crp.copyEssentialHeaders(backendReq, r)
+
+	// Minimal protocol headers
+	if crp.isGRPC && backendReq.Header.Get("Content-Type") == "" {
+		backendReq.Header.Set("Content-Type", "application/grpc+proto")
+	}
+
+	// Execute request immediately
+	resp, err := crp.transport.RoundTrip(backendReq)
+	if err != nil {
+		crp.handleError(w, r, err)
+		return
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.LogError("Failed to close response body", err)
+		}
+	}()
+
+	// Copy only essential response headers
+	crp.copyEssentialResponseHeaders(w, resp)
+
+	// Set status and stream
+	w.WriteHeader(resp.StatusCode)
+	crp.streamResponseUltraFast(w, resp, r)
+}
+
+// copyEssentialHeaders copies only the most essential headers for maximum speed.
+func (crp *CustomReverseProxy) copyEssentialHeaders(dst, src *http.Request) {
+	// Only copy the most critical headers for functionality
+	essentialHeaders := []string{
+		"Content-Type",
+		"Content-Length",
+		"Authorization",
+		"User-Agent",
+		"Accept",
+		"Accept-Encoding",
+	}
+
+	for _, header := range essentialHeaders {
+		if value := src.Header.Get(header); value != "" {
+			dst.Header.Set(header, value)
+		}
+	}
+}
+
+// copyEssentialResponseHeaders copies only essential response headers.
+func (crp *CustomReverseProxy) copyEssentialResponseHeaders(
+	w http.ResponseWriter,
+	resp *http.Response,
+) {
+	// Only copy essential response headers
+	essentialHeaders := []string{
+		"Content-Type",
+		"Content-Length",
+		"Content-Encoding",
+		"Cache-Control",
+		"Set-Cookie",
+	}
+
+	for _, header := range essentialHeaders {
+		if value := resp.Header.Get(header); value != "" {
+			w.Header().Set(header, value)
+		}
+	}
+
+	// Copy gRPC headers if needed
+	if crp.isGRPC {
+		if grpcStatus := resp.Header.Get("Grpc-Status"); grpcStatus != "" {
+			w.Header().Set("Grpc-Status", grpcStatus)
+		}
+		if grpcMessage := resp.Header.Get("Grpc-Message"); grpcMessage != "" {
+			w.Header().Set("Grpc-Message", grpcMessage)
+		}
+	}
+}
+
+// streamResponseUltraFast provides the fastest possible response streaming.
+func (crp *CustomReverseProxy) streamResponseUltraFast(
+	w http.ResponseWriter,
+	resp *http.Response,
+	r *http.Request,
+) {
+	// Use the largest possible buffer for maximum throughput
+	buffer := make([]byte, 128*1024) // 128KB buffer
+
+	flusher, canFlush := w.(http.Flusher)
+
+	for {
+		// Check for client disconnect
+		select {
+		case <-r.Context().Done():
+			return
+		default:
+		}
+
+		n, err := resp.Body.Read(buffer)
+		if n > 0 {
+			if _, writeErr := w.Write(buffer[:n]); writeErr != nil {
+				return
+			}
+
+			// Only flush for gRPC or every 64KB to reduce syscalls
+			if canFlush && (crp.isGRPC || n >= 65536) {
+				flusher.Flush()
+			}
+		}
+
+		if err != nil {
+			break
+		}
+	}
+
+	// Final flush
+	if canFlush {
+		flusher.Flush()
+	}
+}
+
+// handleError handles errors during proxying.
+func (crp *CustomReverseProxy) handleError(w http.ResponseWriter, r *http.Request, err error) {
+	// Handle context errors
+	if errors.Is(err, context.Canceled) {
+		logger.LogDebug("Request canceled", logrus.Fields{
+			"method": r.Method,
+			"path":   r.URL.Path,
+			"grpc":   crp.isGRPC,
+		})
+		return
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) {
+		logger.LogDebug("Request timeout", logrus.Fields{
+			"method": r.Method,
+			"path":   r.URL.Path,
+			"grpc":   crp.isGRPC,
+		})
+		handleTimeoutResponse(w, crp.isGRPC)
+		return
+	}
+
+	// Log other errors
+	logger.LogError("Proxy error", err)
+
+	// Write error response
+	writeErrorResponse(w, err, crp.isGRPC)
+}
+
+// createReverseProxy configures and returns a new CustomReverseProxy.
 func createReverseProxy(
 	localIP string,
 	localPort int,
 	isGRPC bool,
-	w *responseWriterWrapper,
-) *httputil.ReverseProxy {
-	transport := createProtocolFallbackTransport(localIP, localPort, isGRPC)
-	rp := &httputil.ReverseProxy{
-		Director:  proxyDirector(localIP, localPort, isGRPC),
-		Transport: transport,
-		ModifyResponse: proxyModifyResponse( //nolint:bodyclose // handled via wrapper
-			w,
-			isGRPC,
-		),
-		ErrorHandler:  proxyErrorHandler(isGRPC),
-		FlushInterval: 50 * time.Millisecond,
+) *CustomReverseProxy {
+	// Create a simple, reliable transport
+	transport := createSimpleTransport(localIP, localPort)
+
+	// Create connection pool for faster requests (max 10 connections)
+	connPool := newConnectionPool(localIP, localPort, 10)
+
+	// Create buffer pool
+	bufPool := newBufferPool()
+	typedBufPool, ok := bufPool.(*bufferPool)
+	if !ok {
+		// This should never happen, but handle gracefully
+		typedBufPool = &bufferPool{
+			pool: sync.Pool{
+				New: func() any {
+					return make([]byte, 256*1024)
+				},
+			},
+		}
 	}
-	rp.ErrorLog = log.New(&reverseProxyLogAdapter{}, "", 0)
-	return rp
+
+	return &CustomReverseProxy{
+		targetIP:   localIP,
+		targetPort: localPort,
+		isGRPC:     isGRPC,
+		transport:  transport,
+		bufferPool: typedBufPool,
+		connPool:   connPool,
+	}
 }
 
-// reverseProxyLogAdapter suppresses noisy reverse proxy errors while retaining debug info.
-type reverseProxyLogAdapter struct{}
+// Transport Utilities and Helpers
 
-func (a *reverseProxyLogAdapter) Write(p []byte) (int, error) {
-	msg := strings.TrimSpace(string(p))
-	lower := strings.ToLower(msg)
-	if strings.Contains(lower, "reverseproxy read error") &&
-		strings.Contains(lower, "read on closed response body") {
-		logger.LogDebug("Suppressed benign reverse proxy read error", logrus.Fields{"msg": msg})
-		return len(p), nil
-	}
-	if strings.Contains(lower, "reverseproxy read error") &&
-		strings.Contains(lower, "connection reset by peer") {
-		logger.LogDebug("Upstream connection reset", logrus.Fields{"msg": msg})
-		return len(p), nil
-	}
-	logger.LogDebug("ReverseProxy log", logrus.Fields{"msg": msg})
-	return len(p), nil
+type bufferPool struct {
+	pool sync.Pool
 }
 
-// loadTLSConfig loads TLS configuration with proper cipher suites for HTTP/2.
-func loadTLSConfig() *tls.Config {
-	return &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		CipherSuites: []uint16{
-			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+func newBufferPool() httputil.BufferPool {
+	return &bufferPool{
+		pool: sync.Pool{
+			New: func() any {
+				// Use 256KB buffers for large JSON responses
+				// This is especially important for chunked transfer encoding
+				return make([]byte, 256*1024)
+			},
 		},
-		NextProtos: []string{"h2", "http/1.1"},
-		CurvePreferences: []tls.CurveID{
-			tls.CurveP256,
-			tls.X25519,
-		},
-		PreferServerCipherSuites: true,
 	}
+}
+
+func (bp *bufferPool) Get() []byte {
+	if buf, ok := bp.pool.Get().([]byte); ok {
+		return buf
+	}
+	// Fallback if type assertion fails
+	return make([]byte, 256*1024)
+}
+
+func (bp *bufferPool) Put(b []byte) {
+	// Reset slice to full capacity before returning to pool
+	fullCapSlice := b[:cap(b)]
+	bp.pool.Put(&fullCapSlice)
 }

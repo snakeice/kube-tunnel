@@ -27,6 +27,7 @@ type Cache interface {
 	EnsurePortForward(service, namespace string) (string, int, error)
 	EnsurePortForwardWithHint(service, namespace string, preferredPort int) (string, int, error)
 	GetPortForwardIP() string
+	ForceRefreshPortForward(service, namespace string) error
 	Stop()
 }
 
@@ -518,4 +519,33 @@ func (c *cacheImpl) cleanupSessionLocked(
 	if c.monitor != nil {
 		c.monitor.UnregisterService(key)
 	}
+}
+
+// ForceRefreshPortForward forces a refresh of the port-forward for a service.
+func (c *cacheImpl) ForceRefreshPortForward(service, namespace string) error {
+	key := fmt.Sprintf("%s.%s", service, namespace)
+
+	c.Lock()
+	defer c.Unlock()
+
+	// Stop the existing session if it exists
+	if session, exists := c.sessions[key]; exists {
+		logger.LogDebug("Force refreshing port-forward", logrus.Fields{
+			"service":    service,
+			"namespace":  namespace,
+			"local_ip":   session.LocalIP,
+			"local_port": session.LocalPort,
+		})
+
+		// Cancel the existing session
+		if session.Cancel != nil {
+			session.Cancel()
+		}
+
+		// Remove from sessions map
+		delete(c.sessions, key)
+	}
+
+	// The next call to EnsurePortForward will create a fresh session
+	return nil
 }

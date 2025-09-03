@@ -392,10 +392,7 @@ func (hm *Monitor) performHealthCheck(port int) (bool, error) {
 // checkTCPConnection performs a simple TCP connection test.
 func (hm *Monitor) checkTCPConnection(port int) error {
 	// Use a shorter timeout for health checks to avoid blocking
-	timeout := hm.timeout
-	if timeout > 2*time.Second {
-		timeout = 2 * time.Second
-	}
+	timeout := min(hm.timeout, 2*time.Second)
 
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), timeout)
 	if err != nil {

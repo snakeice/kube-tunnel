@@ -120,9 +120,21 @@ The system automatically:
 | `-health`      | Enable health monitoring      | `true`        | `KTUN_HEALTH_ENABLED` |
 | `-dns-ip`      | DNS server bind IP address    | `127.0.0.1`   | `KTUN_DNS_IP`         |
 | `-max-retries` | Maximum retry attempts        | `2`           | `KTUN_RETRY_MAX`      |
+| `-config`      | Path to config file (YAML)    | -             | -                     |
 | `-help`        | Show help message             | -             | -                     |
 
 > **💡 Tip**: Environment variables take precedence over command line flags. This allows for flexible configuration in different deployment scenarios.
+
+### YAML Configuration
+
+The application now supports YAML configuration files that can be specified with the `-config` flag:
+
+```bash
+# Run with a specific config file
+./kube-tunnel -config config.yaml
+```
+
+See [config.example.yaml](config.example.yaml) for all available configuration options and [CONFIG.md](CONFIG.md) for details about the configuration system.
 
 ### Environment Variables
 

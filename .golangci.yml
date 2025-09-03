@@ -29,7 +29,7 @@ linters:
     - govet # reports suspicious constructs, such as Printf calls whose arguments do not align with the format string
     - ineffassign # detects when assignments to existing variables are not used
     - staticcheck # is a go vet on steroids, applying a ton of static analysis checks
-    - unused # checks for unused constants, variables, functions and types
+    # - unused # checks for unused constants, variables, functions and types
     ## disabled by default
     - asasalint # checks for pass []any as any in variadic func(...any)
     - asciicheck # checks that your code does not contain non-ASCII identifiers

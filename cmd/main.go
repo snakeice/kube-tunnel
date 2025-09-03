@@ -13,6 +13,7 @@ import (
 	"github.com/snakeice/kube-tunnel/internal/app"
 	"github.com/snakeice/kube-tunnel/internal/config"
 	"github.com/snakeice/kube-tunnel/internal/logger"
+	"github.com/spf13/viper"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 )
@@ -32,6 +33,7 @@ func main() {
 		healthCheck = flag.Bool("health", true, "Enable health monitoring")
 		dnsIP       = flag.String("dns-ip", "127.0.0.1", "DNS server bind IP address")
 		maxRetries  = flag.Int("max-retries", 2, "Maximum retry attempts for requests")
+		configFile  = flag.String("config", "", "Path to configuration file (YAML)")
 	)
 	flag.Parse()
 
@@ -42,6 +44,22 @@ func main() {
 	if *quiet {
 		os.Setenv("LOG_LEVEL", "quiet")
 	}
+
+	// Setup logger first
+	logger.Setup()
+
+	// Initialize Viper for configuration
+	if err := config.InitViper(*configFile); err != nil {
+		logger.LogError("Error initializing configuration", err)
+		os.Exit(1)
+	}
+
+	// If config file was used, log it
+	if *configFile != "" && viper.ConfigFileUsed() != "" {
+		logger.Log.Infof("Using config file: %s", viper.ConfigFileUsed())
+	}
+
+	// Apply remaining flag overrides to environment after viper setup
 	if *virtual {
 		os.Setenv("KTUN_USE_VIRTUAL", "true")
 	}
@@ -57,8 +75,6 @@ func main() {
 	if *maxRetries != 2 {
 		os.Setenv("KTUN_RETRY_MAX", strconv.Itoa(*maxRetries))
 	}
-
-	logger.Setup()
 	if *help {
 		flag.Usage()
 		printUsageExamples()
@@ -172,6 +188,9 @@ Examples:
 
   # Disable health monitoring for development
   ./kube-tunnel -health=false -verbose
+
+  # Use a configuration file
+  ./kube-tunnel -config=config.yaml
 
   # Custom DNS configuration
   ./kube-tunnel -dns-ip=127.0.0.1 -max-retries=3

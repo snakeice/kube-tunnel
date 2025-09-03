@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -617,8 +618,8 @@ func getUsedIPs() []string {
 	}
 
 	var usedIPs []string
-	lines := strings.Split(string(out), "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(string(out), "\n")
+	for line := range lines {
 		if strings.Contains(line, "inet ") && !strings.Contains(line, "inet6") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
@@ -633,12 +634,7 @@ func getUsedIPs() []string {
 
 // isIPInList checks if an IP is in a list of used IPs.
 func isIPInList(ip string, usedIPs []string) bool {
-	for _, usedIP := range usedIPs {
-		if ip == usedIP {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(usedIPs, ip)
 }
 
 // verifyIPAssigned checks that the IP was properly assigned to the interface.

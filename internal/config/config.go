@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/snakeice/kube-tunnel/internal/logger"
+	"github.com/spf13/viper"
 )
 
 const (
@@ -77,6 +78,13 @@ type ProxyConfig struct {
 }
 
 func GetConfig() *Config {
+	// Check if Viper has been initialized
+	if viper.GetString("network.dnsBindIP") != "" {
+		// Viper is initialized, use it
+		return LoadConfigFromViper()
+	}
+
+	// Fall back to legacy config for backward compatibility
 	perf := createDefaultPerformanceConfig()
 	health := createDefaultHealthConfig()
 	network := createDefaultNetworkConfig()

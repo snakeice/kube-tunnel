@@ -1,0 +1,46 @@
+# Configuration file for kube-tunnel
+# Created on August 25, 2025
+
+# Network configuration
+network:
+  useVirtualInterface: true
+  virtualInterfaceName: "kube-dns0"
+  virtualInterfaceIP: "10.8.0.1"
+  portForwardInterfaceName: "kube-proxy0"
+  portForwardInterfaceIP: "10.8.0.2"
+  dnsBindIP: "10.8.0.1"
+  portForwardBindIP: "10.8.0.2"
+  customIPRanges:
+    - "10.8.0.0/24"
+    - "10.9.0.0/24"
+
+# Performance tuning
+performance:
+  skipHealthCheck: false
+  forceHTTP2: true
+  disableProtocolFallback: false
+  maxIdleConns: 200
+  maxIdleConnsPerHost: 50
+  maxConnsPerHost: 100
+  readTimeout: "120s"
+  writeTimeout: "120s"
+  idleTimeout: "120s"
+  responseHeaderTimeout: "30s"
+  proxyTimeout: "60s"
+  maxConcurrentStreams: 1000
+  maxFrameSize: 524288  # 512 * 1024
+  grpcTimeout: "30s"
+  maxUploadBufferPerConnection: 1048576  # 1 * 1024 * 1024
+  maxUploadBufferPerStream: 1048576      # 1 * 1024 * 1024
+
+# Health monitoring
+health:
+  enabled: true
+  checkInterval: "30s"
+  timeout: "2s"
+  maxFailures: 3
+
+# Proxy settings
+proxy:
+  maxRetries: 2
+  retryDelay: "100ms"

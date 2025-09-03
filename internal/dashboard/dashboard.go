@@ -33,7 +33,7 @@ func NewDashboard() (*Dashboard, error) {
 func (d *Dashboard) ServeDashboard(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	data := map[string]interface{}{
+	data := map[string]any{
 		"Timestamp": time.Now().Format(time.RFC3339),
 		"Title":     "Kube-Tunnel Real-time Health Monitor",
 	}

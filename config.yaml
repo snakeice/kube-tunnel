@@ -1,0 +1,11 @@
+network:
+  useVirtualInterface: true
+  virtualInterfaceName: "kube-dns0"
+  virtualInterfaceIP: "10.8.0.1"
+  portForwardInterfaceName: "kube-proxy0"
+  portForwardInterfaceIP: "10.8.0.2"
+  dnsBindIP: "10.8.0.1"
+  portForwardBindIP: "10.8.0.2"
+  customIPRanges:
+    - "10.8.0.0/24"
+    - "10.9.0.0/24"

@@ -29,10 +29,13 @@ func (w *filteredErrorWriter) Write(p []byte) (int, error) {
 	msg := string(p)
 
 	// Filter out noisy connection reset errors that are normal network behavior
+	// Check these FIRST before checking for "Unhandled Error" since the message
+	// might contain both patterns
 	if strings.Contains(msg, "connection reset by peer") ||
 		strings.Contains(msg, "broken pipe") ||
 		strings.Contains(msg, "use of closed network connection") ||
-		strings.Contains(msg, "write: broken pipe") {
+		strings.Contains(msg, "write: broken pipe") ||
+		strings.Contains(msg, "read: connection reset by peer") {
 		// Log these as debug level instead of error
 		logger.LogDebug("Port-forward connection closed by client", logrus.Fields{
 			"namespace": w.namespace,
@@ -43,8 +46,24 @@ func (w *filteredErrorWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 
-	// For other errors, log them as warnings but with more context
+	// For other errors that don't match connection reset patterns,
+	// log them as warnings but with more context
 	if strings.Contains(msg, "Unhandled Error") || strings.Contains(msg, "error copying") {
+		// Double-check it's not a connection reset error we missed
+		lowerMsg := strings.ToLower(msg)
+		if strings.Contains(lowerMsg, "connection reset") ||
+			strings.Contains(lowerMsg, "broken pipe") {
+			// Still a connection reset, just log as debug
+			logger.LogDebug("Port-forward connection closed", logrus.Fields{
+				"namespace": w.namespace,
+				"pod":       w.pod,
+				"message":   strings.TrimSpace(msg),
+				"category":  "connection_lifecycle",
+			})
+			return len(p), nil
+		}
+
+		// It's a real error, log as warning
 		logger.Log.WithFields(logrus.Fields{
 			"namespace": w.namespace,
 			"pod":       w.pod,
@@ -156,9 +175,10 @@ func runPortForwardWithRetry(
 	localPort, remotePort int,
 ) error {
 	// Retry logic for transient errors
-	maxRetries := 5               // Increased retries for better resilience
-	retryDelay := 1 * time.Second // Faster initial retry
+	maxRetries := 15                     // Increased retries for better resilience
+	retryDelay := 200 * time.Millisecond // Much faster initial retry
 	var lastErr error
+
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		done := make(chan error, 1)
 		go func() {
@@ -200,11 +220,22 @@ func runPortForwardWithRetry(
 				"remote_port": remotePort,
 				"attempt":     attempt,
 			}).Info("🔗 Port-forward tunnel established")
+
+			// Start aggressive monitoring of the port-forward
+			go monitorPortForwardAggressively(
+				ctx,
+				setup,
+				namespace,
+				pod,
+				localIP,
+				localPort,
+				remotePort,
+			)
 			return nil
 		case err := <-done:
 			lastErr = err
-			// Retry only on transient errors
-			if err != nil && isTransientPortForwardError(err) && attempt < maxRetries {
+			// Retry on any error, not just transient ones
+			if err != nil && attempt < maxRetries {
 				logger.Log.WithFields(logrus.Fields{
 					"namespace":   namespace,
 					"pod":         pod,
@@ -213,17 +244,13 @@ func runPortForwardWithRetry(
 					"remote_port": remotePort,
 					"attempt":     attempt,
 					"error":       err.Error(),
-				}).Warn("Transient error detected, retrying port-forward...")
+				}).Warn("Port-forward error detected, retrying immediately...")
 
-				// Exponential backoff with jitter
-				delay := time.Duration(attempt) * retryDelay
-				if delay > 10*time.Second {
-					delay = 10 * time.Second
-				}
-				time.Sleep(delay)
+				// Very short delay for immediate retry
+				time.Sleep(retryDelay)
 				continue
 			}
-			// Non-transient or max retries reached
+			// Max retries reached
 			return fmt.Errorf("port-forward failed after %d attempts: %w", attempt, err)
 		case <-ctx.Done():
 			return ctx.Err()
@@ -231,6 +258,64 @@ func runPortForwardWithRetry(
 	}
 	return lastErr
 }
+
+// monitorPortForwardAggressively monitors the port-forward and restarts it immediately on failure.
+func monitorPortForwardAggressively(
+	ctx context.Context,
+	setup *PortForwarderSetup,
+	namespace, pod, localIP string,
+	localPort, remotePort int,
+) {
+	// Wait for the port-forward to complete
+	<-ctx.Done()
+
+	// If context is cancelled, don't restart
+	if ctx.Err() != nil {
+		return
+	}
+
+	// Immediately restart the port-forward
+	logger.Log.WithFields(logrus.Fields{
+		"namespace":   namespace,
+		"pod":         pod,
+		"local_ip":    localIP,
+		"local_port":  localPort,
+		"remote_port": remotePort,
+	}).Warn("🚨 Port-forward tunnel failed, restarting immediately...")
+
+	// Create a new context for the restart with very short timeout
+	restartCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Try to restart the port-forward immediately
+	if err := runPortForwardWithRetry(restartCtx, setup, namespace, pod, localIP, localPort, remotePort); err != nil {
+		logger.Log.WithFields(logrus.Fields{
+			"namespace":   namespace,
+			"pod":         pod,
+			"local_ip":    localIP,
+			"local_port":  localPort,
+			"remote_port": remotePort,
+			"error":       err.Error(),
+		}).Error("Failed to restart port-forward immediately")
+
+		// Try one more time with a longer timeout
+		restartCtx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel2()
+
+		if err2 := runPortForwardWithRetry(restartCtx2, setup, namespace, pod, localIP, localPort, remotePort); err2 != nil {
+			logger.Log.WithFields(logrus.Fields{
+				"namespace":   namespace,
+				"pod":         pod,
+				"local_ip":    localIP,
+				"local_port":  localPort,
+				"remote_port": remotePort,
+				"error":       err2.Error(),
+			}).Error("Failed to restart port-forward after multiple attempts")
+		}
+	}
+}
+
+// createPersistentPortForwarder creates
 
 // startFallbackListener creates a listener on the specific IP for fallback port forwarding.
 func startFallbackListener(ctx context.Context, localIP string, localPort int) {
@@ -320,25 +405,6 @@ func copyData(dst, src net.Conn) {
 			return
 		}
 	}
-}
-
-// isTransientPortForwardError checks if the error is transient and worth retrying.
-func isTransientPortForwardError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	// Add more patterns as needed
-	if strings.Contains(msg, "connection reset by peer") ||
-		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "EOF") ||
-		strings.Contains(msg, "use of closed network connection") ||
-		strings.Contains(msg, "network is unreachable") ||
-		strings.Contains(msg, "connection refused") {
-		return true
-	}
-	return false
 }
 
 // isConnectionResetError checks if the error is a connection reset that should be logged quietly.

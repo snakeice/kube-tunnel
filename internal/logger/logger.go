@@ -388,11 +388,10 @@ func LogProxyMetrics(
 	}).Log(level, emoji+" Proxy operation completed")
 }
 
-func LogRetry(attempt int, delay string, err error) {
+func LogRetry(attempt int, delay string) {
 	Log.WithFields(logrus.Fields{
 		"attempt": attempt,
 		"delay":   delay,
-		"error":   err.Error(),
 	}).Warn("🔄 Retrying connection")
 }
 

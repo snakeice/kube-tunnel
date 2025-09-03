@@ -1,12 +1,9 @@
 package proxy
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,67 +14,108 @@ import (
 	"github.com/snakeice/kube-tunnel/internal/config"
 	"github.com/snakeice/kube-tunnel/internal/health"
 	"github.com/snakeice/kube-tunnel/internal/logger"
-	"github.com/snakeice/kube-tunnel/internal/metrics"
 )
 
-// Proxy encapsulates dependencies required to handle proxy and health endpoints.
-// This supports a cleaner architecture by separating construction from usage
-// and allowing dependency injection (useful for tests / future interfaces).
-type Proxy struct {
-	cache  cache.Cache
-	health *health.Monitor
-	cfg    *config.Config
-}
+const (
+	protocolHTTP = "http"
+	protocolGRPC = "grpc"
+)
 
-// New creates a new Proxy handler container.
 func New(c cache.Cache, hm *health.Monitor, cfg *config.Config) *Proxy {
 	return &Proxy{cache: c, health: hm, cfg: cfg}
 }
 
-// HandleProxy is the struct-based equivalent of the previous package-level Handler.
 func (p *Proxy) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
+
+	// Fast path: Try to use cached setup and proxy
+	if cachedProxy, _ := p.tryFastPath(w, r, startTime); cachedProxy != nil {
+		return
+	}
+
+	// Fallback to regular path
+	p.handleProxyRegular(w, r, startTime)
+}
+
+func (p *Proxy) tryFastPath(
+	w http.ResponseWriter,
+	r *http.Request,
+	startTime time.Time,
+) (*CustomReverseProxy, *SetupCacheEntry) {
+	hostParts := strings.SplitN(r.Host, ".", 3)
+	if len(hostParts) < 2 {
+		return nil, nil
+	}
+
+	service := hostParts[0]
+	namespace := hostParts[1]
+	isGRPC := strings.Contains(r.Header.Get("Content-Type"), "grpc") ||
+		strings.Contains(r.Header.Get("User-Agent"), "grpc")
+
+	cacheKey := ProxyCacheKey{Service: service, Namespace: namespace, IsGRPC: isGRPC}
+
+	if cachedSetupInterface, ok := p.setupCache.Load(cacheKey); ok {
+		cachedProxy, cachedSetup := p.tryUseCachedSetup(
+			cachedSetupInterface,
+			cacheKey,
+			w,
+			r,
+			service,
+			startTime,
+		)
+		if cachedProxy != nil && cachedSetup != nil {
+			return cachedProxy, cachedSetup
+		}
+	}
+
+	return nil, nil
+}
+
+// tryUseCachedSetup attempts to use cached setup if valid.
+func (p *Proxy) tryUseCachedSetup(
+	cachedSetupInterface any,
+	cacheKey ProxyCacheKey,
+	w http.ResponseWriter,
+	r *http.Request,
+	service string,
+	startTime time.Time,
+) (*CustomReverseProxy, *SetupCacheEntry) {
+	cachedSetup, ok := cachedSetupInterface.(*SetupCacheEntry)
+	if !ok || time.Now().After(cachedSetup.Expiry) {
+		p.setupCache.Delete(cacheKey)
+		p.proxyCache.Delete(cacheKey)
+		return nil, nil
+	}
+
+	cachedProxyInterface, exists := p.proxyCache.Load(cacheKey)
+	if !exists {
+		return nil, nil
+	}
+
+	cachedProxy, ok := cachedProxyInterface.(*CustomReverseProxy)
+	if !ok {
+		return nil, nil
+	}
+
+	responseWriter := &responseWriterWrapper{ResponseWriter: w, statusCode: 200}
+	r.Header.Set("X-Internal-Request", "1")
+	cachedProxy.ServeHTTP(responseWriter, r)
+
+	duration := time.Since(startTime)
+	if duration > 100*time.Millisecond {
+		logger.LogDebug("Fast path slower than expected", logrus.Fields{
+			"service":  service,
+			"duration": duration.String(),
+		})
+	}
+
+	return cachedProxy, cachedSetup
+}
+
+func (p *Proxy) handleProxyRegular(w http.ResponseWriter, r *http.Request, startTime time.Time) {
 	isGRPC := isGRPCRequest(r)
 	protocolInfo := getProtocolInfo(r)
 
-	// Debug logging for request details
-	logger.LogDebug("🔍 Processing request", logrus.Fields{
-		"method":               r.Method,
-		"url":                  r.URL.String(),
-		"host":                 r.Host,
-		"headers":              fmt.Sprintf("%v", r.Header),
-		"remote_addr":          r.RemoteAddr,
-		"user_agent":           r.Header.Get("User-Agent"),
-		"has_context_deadline": func() bool { _, ok := r.Context().Deadline(); return ok }(),
-	})
-
-	// Create a timeout context, but ensure it doesn't override a longer client timeout
-	var ctx context.Context
-	var cancel context.CancelFunc
-
-	if deadline, ok := r.Context().Deadline(); ok {
-		// Client already has a deadline, respect it if it's longer than our timeout
-		proxyDeadline := time.Now().Add(p.cfg.Performance.ProxyTimeout)
-		logger.LogDebug("🕒 Client has deadline", logrus.Fields{
-			"client_deadline":          deadline,
-			"proxy_deadline":           proxyDeadline,
-			"will_use_client_deadline": deadline.After(proxyDeadline),
-		})
-		if deadline.After(proxyDeadline) {
-			// Client deadline is longer, use our timeout
-			ctx, cancel = context.WithTimeout(r.Context(), p.cfg.Performance.ProxyTimeout)
-		} else {
-			// Client deadline is shorter or similar, use client's context
-			ctx, cancel = context.WithCancel(r.Context())
-		}
-	} else {
-		// No client deadline, use our timeout
-		ctx, cancel = context.WithTimeout(r.Context(), p.cfg.Performance.ProxyTimeout)
-	}
-	defer cancel()
-	r = r.WithContext(ctx)
-
-	requestSize := max(r.ContentLength, 0)
 	logger.LogRequest(r.Method, r.URL.Path, protocolInfo, r.RemoteAddr)
 
 	if handleCORS(w, r) {
@@ -89,45 +127,40 @@ func (p *Proxy) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	localIP, localPort, err := p.setupPortForward(service, namespace, r)
+	localIP, localPort, err := p.setupPortForwardUltraFast(service, namespace, r)
 	if err != nil {
 		p.handlePortForwardError(w, service, namespace, isGRPC, err)
 		return
 	}
 
-	p.checkBackendHealth(service, namespace, localIP, localPort)
+	cacheKey := ProxyCacheKey{Service: service, Namespace: namespace, IsGRPC: isGRPC}
+	cachedProxy := p.getOrCreateCachedProxy(cacheKey, localIP, localPort, isGRPC)
+
+	setupEntry := &SetupCacheEntry{
+		LocalIP:   localIP,
+		LocalPort: localPort,
+		Expiry:    time.Now().Add(5 * time.Minute),
+	}
+	p.setupCache.Store(cacheKey, setupEntry)
 
 	responseWriter := &responseWriterWrapper{ResponseWriter: w, statusCode: 200}
-	p.executeProxy(
-		responseWriter, r, service, namespace,
-		localIP, localPort, isGRPC, startTime, requestSize,
-	)
+	cachedProxy.ServeHTTP(responseWriter, r)
+
+	totalDuration := time.Since(startTime)
+	p.recordMetricsFast(responseWriter, r, service, namespace, isGRPC, totalDuration)
 }
 
-// setupPortForward handles the port forwarding setup logic.
-func (p *Proxy) setupPortForward(service, namespace string, r *http.Request) (string, int, error) {
-	originalPort := extractOriginalPort(r)
-
-	var localIP string
-	var localPort int
-	var err error
-
-	// Try to use the same port for Kubernetes port-forwarding if available
-	if originalPort > 0 {
-		localIP, localPort, err = p.cache.EnsurePortForwardWithHint(
-			service,
-			namespace,
-			originalPort,
-		)
-	} else {
-		localIP, localPort, err = p.cache.EnsurePortForward(service, namespace)
-	}
-
-	if err != nil {
-		return "", 0, err
-	}
-
-	return localIP, localPort, nil
+// ProxyRequest contains the parameters for proxy execution.
+type ProxyRequest struct {
+	ResponseWriter *responseWriterWrapper
+	Request        *http.Request
+	Service        string
+	Namespace      string
+	LocalIP        string
+	LocalPort      int
+	IsGRPC         bool
+	StartTime      time.Time
+	RequestSize    int64
 }
 
 // handlePortForwardError handles port forward errors.
@@ -142,131 +175,6 @@ func (p *Proxy) handlePortForwardError(
 		w.WriteHeader(http.StatusOK)
 	} else {
 		http.Error(w, "Error creating port-forward", http.StatusInternalServerError)
-	}
-}
-
-// executeProxy executes the actual proxy request and records metrics.
-func (p *Proxy) executeProxy(
-	responseWriter *responseWriterWrapper,
-	r *http.Request,
-	service, namespace, localIP string,
-	localPort int,
-	isGRPC bool,
-	startTime time.Time,
-	requestSize int64,
-) {
-	rp := createReverseProxy(localIP, localPort, isGRPC, responseWriter)
-
-	rp.ServeHTTP(responseWriter, r)
-	totalDuration := time.Since(startTime)
-
-	p.recordMetrics(
-		responseWriter,
-		r,
-		service,
-		namespace,
-		isGRPC,
-		totalDuration,
-		requestSize,
-	)
-}
-
-// recordMetrics records health and performance metrics.
-func (p *Proxy) recordMetrics(
-	responseWriter *responseWriterWrapper,
-	r *http.Request,
-	service, namespace string,
-	isGRPC bool,
-	totalDuration time.Duration,
-	requestSize int64,
-) {
-	// Store real request response time in health monitor for dashboard display
-	if p.health != nil && p.cache != nil {
-		serviceKey := fmt.Sprintf("%s.%s", service, namespace)
-		p.health.UpdateServicePerformance(
-			serviceKey,
-			totalDuration,
-			responseWriter.statusCode < 400,
-		)
-	}
-
-	// Record real request metrics
-	if p.cache != nil {
-		metrics.RecordRequestMetrics(
-			service,
-			namespace,
-			r.Method,
-			responseWriter.statusCode,
-			totalDuration,
-			requestSize,
-			responseWriter.responseSize,
-		)
-	}
-
-	logger.LogResponseMetrics(
-		r.Method,
-		r.URL.Path,
-		responseWriter.statusCode,
-		totalDuration,
-		responseWriter.responseSize,
-		isGRPC,
-	)
-}
-
-// 3. Standard ports based on scheme.
-func extractOriginalPort(r *http.Request) int {
-	// Check X-Forwarded-Port header first (set by our port manager)
-	if forwardedPort := r.Header.Get("X-Forwarded-Port"); forwardedPort != "" {
-		if port, err := strconv.Atoi(forwardedPort); err == nil && port > 0 && port <= 65535 {
-			return port
-		}
-	}
-
-	// Check the Host header for port information
-	host := r.Host
-	if strings.Contains(host, ":") {
-		parts := strings.Split(host, ":")
-		if len(parts) == 2 {
-			if port, err := strconv.Atoi(parts[1]); err == nil && port > 0 && port <= 65535 {
-				return port
-			}
-		}
-	}
-
-	// If no explicit port, try to infer from scheme or use common defaults
-	// This is useful when traffic comes through iptables redirects
-	if r.TLS != nil {
-		return 443 // HTTPS default
-	}
-	return 80 // HTTP default
-}
-
-// checkBackendHealth - only log actual health issues.
-func (p *Proxy) checkBackendHealth(service, namespace, localIP string, localPort int) {
-	if !p.cfg.Health.Enabled {
-		return
-	}
-
-	// Perform basic TCP health check
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", localIP, localPort), 3*time.Second)
-	if err != nil {
-		logger.Log.WithFields(logrus.Fields{
-			"service":   service,
-			"namespace": namespace,
-			"port":      localPort,
-			"error":     err.Error(),
-		}).Warn("🏥 Backend health check failed")
-		return
-	}
-
-	err = conn.Close()
-	if err != nil {
-		logger.Log.WithFields(logrus.Fields{
-			"service":   service,
-			"namespace": namespace,
-			"port":      localPort,
-			"error":     err.Error(),
-		}).Warn("🏥 Backend health check failed")
 	}
 }
 
@@ -346,6 +254,76 @@ func (p *Proxy) healthStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
+}
+
+// setupPortForwardUltraFast sets up port forwarding with minimal overhead.
+func (p *Proxy) setupPortForwardUltraFast(
+	service, namespace string,
+	r *http.Request,
+) (string, int, error) {
+	originalPort := extractOriginalPort(r)
+
+	// Direct cache call without context timeout for maximum speed
+	var localIP string
+	var localPort int
+	var err error
+
+	if originalPort > 0 {
+		localIP, localPort, err = p.cache.EnsurePortForwardWithHint(
+			service,
+			namespace,
+			originalPort,
+		)
+	} else {
+		localIP, localPort, err = p.cache.EnsurePortForward(service, namespace)
+	}
+
+	return localIP, localPort, err
+}
+
+// getOrCreateCachedProxy gets or creates a cached proxy instance.
+func (p *Proxy) getOrCreateCachedProxy(
+	cacheKey ProxyCacheKey,
+	localIP string,
+	localPort int,
+	isGRPC bool,
+) *CustomReverseProxy {
+	if cachedInterface, exists := p.proxyCache.Load(cacheKey); exists {
+		if cachedProxy, ok := cachedInterface.(*CustomReverseProxy); ok {
+			return cachedProxy
+		}
+		p.proxyCache.Delete(cacheKey)
+	}
+
+	// Create new proxy with optimized settings
+	proxy := createReverseProxy(localIP, localPort, isGRPC)
+	p.proxyCache.Store(cacheKey, proxy)
+	return proxy
+}
+
+// recordMetricsFast records metrics with minimal overhead.
+func (p *Proxy) recordMetricsFast(
+	responseWriter *responseWriterWrapper,
+	r *http.Request,
+	service, namespace string,
+	isGRPC bool,
+	duration time.Duration,
+) {
+	// Only record essential metrics for performance
+	protocol := protocolHTTP
+	if isGRPC {
+		protocol = protocolGRPC
+	}
+
+	// Log minimal metrics
+	logger.LogDebug("Request completed", logrus.Fields{
+		"service":   service,
+		"namespace": namespace,
+		"method":    r.Method,
+		"status":    responseWriter.statusCode,
+		"duration":  duration.String(),
+		"protocol":  protocol,
+	})
 }
 
 func (p *Proxy) healthMetricsHandler(w http.ResponseWriter, r *http.Request) {
