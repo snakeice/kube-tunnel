@@ -17,7 +17,8 @@ func safeIntToUint32(val int) uint32 {
 	if val < 0 {
 		return 0
 	}
-	if val > math.MaxUint32 {
+	// Use math.MaxInt32 as a safe upper bound that works on all platforms
+	if val > math.MaxInt32 {
 		return math.MaxUint32
 	}
 	return uint32(val)
