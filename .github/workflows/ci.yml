@@ -110,7 +110,6 @@ jobs:
         with:
           name: kube-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}
           path: kube-tunnel-*
-
   security:
     name: Security Scan
     runs-on: ubuntu-latest
@@ -122,8 +121,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.32.0
+      # Optional diagnostic step
+      - name: Debug runner environment # NEW
+        run: |
+          df -h
+          ls -l
+          whoami
+
+      - name: Run Trivy vulnerability scanner # UPDATED
+        uses: aquasecurity/trivy-action@0.16.0
         with:
           scan-type: "fs"
           scan-ref: "."
@@ -131,6 +137,13 @@ jobs:
           output: "trivy-results.sarif"
           ignore-unfixed: true
           vuln-type: "os,library"
+
+      - name: Ensure Trivy results exist # NEW
+        run: |
+          if [ ! -f trivy-results.sarif ]; then
+            echo "Trivy scan did not produce a SARIF file"
+            exit 1
+          fi
 
       - name: Upload Trivy scan results to GitHub Security tab
         if: always()
