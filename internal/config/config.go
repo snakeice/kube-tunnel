@@ -63,10 +63,14 @@ type NetworkConfig struct {
 	PortForwardInterfaceIP   string
 
 	// DNS configuration
-	DNSBindIP string
+	DNSBindIP    string
+	DNSEnableTCP bool
 
 	// Port forwarding configuration
 	PortForwardBindIP string
+
+	// Proxy configuration
+	ProxyBindIP string
 
 	// IP range configuration for finding free IPs
 	CustomIPRanges []string // Custom IP ranges to search for free IPs
@@ -155,7 +159,9 @@ func createDefaultNetworkConfig() NetworkConfig {
 		PortForwardInterfaceIP:   portForwardIP,
 
 		DNSBindIP:         dnsIP,
+		DNSEnableTCP:      true,
 		PortForwardBindIP: portForwardIP,
+		ProxyBindIP:       "127.0.0.1",
 		CustomIPRanges: []string{
 			"10.8.0.0/24",
 			"10.9.0.0/24",
@@ -218,8 +224,12 @@ func applyNetworkOverrides(network NetworkConfig) NetworkConfig {
 	if val := os.Getenv("KTUN_DNS_IP"); val != "" {
 		network.DNSBindIP = val
 	}
+	network.DNSEnableTCP = getEnvBool("KTUN_DNS_TCP", network.DNSEnableTCP)
 	if val := os.Getenv("KTUN_FORWARD_IP"); val != "" {
 		network.PortForwardBindIP = val
+	}
+	if val := os.Getenv("KTUN_PROXY_IP"); val != "" {
+		network.ProxyBindIP = val
 	}
 	network.UseVirtualInterface = getEnvBool("KTUN_USE_VIRTUAL", network.UseVirtualInterface)
 	if val := os.Getenv("KTUN_VIRTUAL_NAME"); val != "" {

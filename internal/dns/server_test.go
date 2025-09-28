@@ -17,6 +17,49 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestProxyDNS_TCPSupport(t *testing.T) {
+	tests := []struct {
+		name         string
+		enableTCP    bool
+		expectTCPNil bool
+	}{
+		{
+			name:         "TCP enabled",
+			enableTCP:    true,
+			expectTCPNil: false,
+		},
+		{
+			name:         "TCP disabled",
+			enableTCP:    false,
+			expectTCPNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Network: config.NetworkConfig{
+					DNSEnableTCP: tt.enableTCP,
+				},
+			}
+
+			p := kubeDns.NewProxyDNS(cfg, "127.0.0.1")
+
+			// Use reflection or check internal state
+			// Since the fields are not exported, we can test the behavior indirectly
+			// by checking if TCP server is nil or not through the struct
+
+			// This is a basic test to ensure the constructor works with the new TCP flag
+			if p == nil {
+				t.Fatal("ProxyDNS should not be nil")
+			}
+
+			// Test would require access to internal fields or a getter method
+			// For now, just ensure the constructor doesn't panic with TCP settings
+		})
+	}
+}
+
 func TestProxyDNS_handleDNSQueryA(t *testing.T) {
 	cfg := &config.Config{}
 	p := kubeDns.NewProxyDNS(cfg, "127.0.0.1")

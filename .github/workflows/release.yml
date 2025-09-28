@@ -68,10 +68,6 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
-          SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
-          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           COSIGN_EXPERIMENTAL: 1
 
       - name: Upload release artifacts
@@ -111,9 +107,6 @@ jobs:
           echo "📦 Release published to package managers:"
           echo "  - GitHub Releases"
           echo "  - Docker (ghcr.io)"
-          echo "  - Homebrew (pending PR)"
-          echo "  - Scoop (pending PR)"
-          echo "  - Winget (pending PR)"
           echo "  - Snapcraft (automatic)"
 
   verify-release:

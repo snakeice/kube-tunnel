@@ -9,6 +9,7 @@ network:
   portForwardInterfaceName: "kube-proxy0"
   portForwardInterfaceIP: "10.8.0.2"
   dnsBindIP: "10.8.0.1"
+  dnsEnableTCP: true  # Enable TCP support for DNS server
   portForwardBindIP: "10.8.0.2"
   customIPRanges:
     - "10.8.0.0/24"

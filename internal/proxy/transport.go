@@ -68,6 +68,11 @@ func createTransport(
 		return conn, nil
 	}
 
+	// Force h2c (HTTP/2 over cleartext) for gRPC
+	if protocol == "h2c" {
+		return createH2CTransport(dialer)
+	}
+
 	if isHTTPS {
 		return createHTTPSTransport(dialer, cfg)
 	}
@@ -99,6 +104,22 @@ func createHTTPTransport(
 	}
 
 	return transport
+}
+
+func createH2CTransport(
+	dialer func(string, string) (net.Conn, error),
+
+) http.RoundTripper {
+	// Create HTTP/2 transport for h2c (cleartext HTTP/2)
+	http2Transport := &http2.Transport{
+		AllowHTTP: true, // Allow h2c
+		DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
+			// For h2c, we don't use TLS, just return a regular connection
+			return dialer(network, addr)
+		},
+	}
+
+	return http2Transport
 }
 
 func createHTTPSTransport(

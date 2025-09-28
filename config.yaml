@@ -9,3 +9,34 @@ network:
   customIPRanges:
     - "10.8.0.0/24"
     - "10.9.0.0/24"
+
+# Performance tuning
+performance:
+  skipHealthCheck: false
+  forceHTTP2: true
+  disableProtocolFallback: true
+  maxIdleConns: 200
+  maxIdleConnsPerHost: 50
+  maxConnsPerHost: 100
+  readTimeout: "120s"
+  writeTimeout: "120s"
+  idleTimeout: "120s"
+  responseHeaderTimeout: "30s"
+  proxyTimeout: "60s"
+  maxConcurrentStreams: 1000
+  maxFrameSize: 524288
+  grpcTimeout: "30s"
+  maxUploadBufferPerConnection: 1048576
+  maxUploadBufferPerStream: 1048576
+
+# Health monitoring
+health:
+  enabled: true
+  checkInterval: "30s"
+  timeout: "2s"
+  maxFailures: 3
+
+# Proxy settings
+proxy:
+  maxRetries: 2
+  retryDelay: "100ms"

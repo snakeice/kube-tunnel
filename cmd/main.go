@@ -103,9 +103,9 @@ func main() {
 	go startServer(server, *port, container)
 
 	// Start enhanced port manager if available
-	if err := container.StartPortManager(*port); err != nil {
+	if err := container.StartPortManager(*port, *virtual); err != nil {
 		logger.LogError("Failed to start enhanced port manager", err)
-		// Continue without failing - basic functionality will still work
+		// Continue without enhanced port manager
 	}
 
 	<-sigChan

@@ -44,11 +44,18 @@ func Build() (*Container, error) {
 
 	// Step 1: Create cache with localhost initially (will be updated after virtual interface is created)
 	c.Cache = cache.NewCacheWithIP(c.Monitor, cfg, "")
-	portForwardIP := c.Cache.GetPortForwardIP()
-	logger.Log.Infof("Initial port forward IP configured: %s", portForwardIP)
 
-	// Step 2: Start DNS server on localhost first
-	c.DNS = dns.NewProxyDNS(cfg, portForwardIP)
+	// For DNS resolution, we need to use the virtual interface IP (where universal port handler listens)
+	// not the port-forward IP (where the proxy runs)
+	dnsResolveIP := cfg.Network.VirtualInterfaceIP
+	if dnsResolveIP == "" {
+		// Fallback to port-forward IP if no virtual interface
+		dnsResolveIP = c.Cache.GetPortForwardIP()
+	}
+	logger.Log.Infof("DNS will resolve to IP: %s", dnsResolveIP)
+
+	// Step 2: Start DNS server
+	c.DNS = dns.NewProxyDNS(cfg, dnsResolveIP)
 	if err := c.DNS.Start(); err != nil {
 		return nil, err
 	}
@@ -105,7 +112,7 @@ func Build() (*Container, error) {
 }
 
 // StartPortManager starts the enhanced port manager if available.
-func (c *Container) StartPortManager(mainProxyPort int) error {
+func (c *Container) StartPortManager(mainProxyPort int, virtualInterface bool) error {
 	if c.PortManager == nil {
 		logger.Log.Debug("No enhanced port manager to start")
 		return nil
@@ -113,6 +120,13 @@ func (c *Container) StartPortManager(mainProxyPort int) error {
 
 	// Update the main proxy port
 	c.PortManager.UpdateMainProxyPort(mainProxyPort)
+
+	// Enable virtual interface support if requested and available
+	if virtualInterface {
+		if err := c.PortManager.EnableVirtualInterface(); err != nil {
+			logger.LogError("Failed to enable virtual interface support", err)
+		}
+	}
 
 	// Start the enhanced port manager
 	logger.Log.Infof("Starting enhanced port manager with main proxy port: %d", mainProxyPort)

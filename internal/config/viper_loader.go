@@ -180,10 +180,8 @@ func LoadConfigFromViper() *Config {
 		VirtualInterfaceName:     viper.GetString("network.virtualInterfaceName"),
 		VirtualInterfaceIP:       viper.GetString("network.virtualInterfaceIP"),
 		PortForwardInterfaceName: viper.GetString("network.portForwardInterfaceName"),
-		PortForwardInterfaceIP:   viper.GetString("network.portForwardInterfaceIP"),
 		DNSBindIP:                viper.GetString("network.dnsBindIP"),
 		PortForwardBindIP:        viper.GetString("network.portForwardBindIP"),
-		CustomIPRanges:           viper.GetStringSlice("network.customIPRanges"),
 	}
 
 	proxy := ProxyConfig{
