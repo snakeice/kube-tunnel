@@ -121,15 +121,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      # Optional diagnostic step
-      - name: Debug runner environment # NEW
-        run: |
-          df -h
-          ls -l
-          whoami
-
-      - name: Run Trivy vulnerability scanner # UPDATED
-        uses: aquasecurity/trivy-action@0.16.0
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: "fs"
           scan-ref: "."
