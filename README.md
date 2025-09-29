@@ -12,7 +12,7 @@ Transform how you access Kubernetes services with DNS-style routing and zero-con
 
 - 🚀 **Multi-Protocol Support** — HTTP/1.1, HTTP/2 (h2/h2c) and gRPC on a single port
 - ⚡ **Auto Port-Forwarding** — Automatic, cached port-forwards to healthy pods
-- 🌐 **Virtual DNS Interface** — Isolated DNS mode to avoid VPN/hosts conflicts
+- 🌐 **Virtual DNS Interface** — Isolated DNS mode with UDP+TCP support to avoid VPN/hosts conflicts
 - 🏠 **Free Local IP** — Smart allocation (127.0.0.2+) to prevent localhost collisions
 - � **Universal Port Handling** — Handle ALL ports on virtual interface with intelligent port matching
 - �📊 **Health Monitoring** — Lightweight monitoring with Prometheus metrics
@@ -119,6 +119,7 @@ The system automatically:
 | `-virtual-ip`  | Virtual interface IP address  | auto-allocate | `KTUN_VIRTUAL_IP`     |
 | `-health`      | Enable health monitoring      | `true`        | `KTUN_HEALTH_ENABLED` |
 | `-dns-ip`      | DNS server bind IP address    | `127.0.0.1`   | `KTUN_DNS_IP`         |
+| `-dns-tcp`     | Enable TCP support for DNS    | `true`        | `KTUN_DNS_TCP`        |
 | `-max-retries` | Maximum retry attempts        | `2`           | `KTUN_RETRY_MAX`      |
 | `-config`      | Path to config file (YAML)    | -             | -                     |
 | `-help`        | Show help message             | -             | -                     |
@@ -166,6 +167,7 @@ export KTUN_GRPC_TIMEOUT="30S"          # Timeout for gRPC requests
 ```bash
 # Core Network Settings
 export KTUN_DNS_IP=127.0.0.1            # DNS server bind IP
+export KTUN_DNS_TCP=true                 # Enable TCP support for DNS server
 export KTUN_FORWARD_IP=127.0.0.1        # Port forward bind IP
 export KTUN_USE_VIRTUAL=true            # Enable dual virtual interface mode
 

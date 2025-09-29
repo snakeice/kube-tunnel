@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -63,7 +63,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -90,7 +90,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -110,7 +110,6 @@ jobs:
         with:
           name: kube-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}
           path: kube-tunnel-*
-
   security:
     name: Security Scan
     runs-on: ubuntu-latest
@@ -131,6 +130,13 @@ jobs:
           output: "trivy-results.sarif"
           ignore-unfixed: true
           vuln-type: "os,library"
+
+      - name: Ensure Trivy results exist # NEW
+        run: |
+          if [ ! -f trivy-results.sarif ]; then
+            echo "Trivy scan did not produce a SARIF file"
+            exit 1
+          fi
 
       - name: Upload Trivy scan results to GitHub Security tab
         if: always()
@@ -175,7 +181,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -234,7 +240,7 @@ jobs:
           args: check
 
       - name: Validate Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: Dockerfile
           failure-threshold: warning
@@ -254,7 +260,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true

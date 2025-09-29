@@ -15,10 +15,14 @@ import (
 	"github.com/snakeice/kube-tunnel/internal/tools"
 )
 
-const localhostIP = "127.0.0.1"
+const (
+	localhostIP = "127.0.0.1"
+	tcpSuffix   = "+TCP"
+)
 
 type ProxyDNS struct {
-	server           *dns.Server
+	udpServer        *dns.Server
+	tcpServer        *dns.Server
 	port             int
 	quit             chan struct{}
 	running          bool
@@ -57,12 +61,23 @@ func NewProxyDNS(cfg *config.Config, portForwardIP string) *ProxyDNS {
 		PreferGo: false,
 	}
 
-	return &ProxyDNS{
-		port: port,
-		server: &dns.Server{
+	udpServer := &dns.Server{
+		Addr: fmt.Sprintf("%s:%d", initialBindIP, port),
+		Net:  "udp",
+	}
+
+	var tcpServer *dns.Server
+	if cfg.Network.DNSEnableTCP {
+		tcpServer = &dns.Server{
 			Addr: fmt.Sprintf("%s:%d", initialBindIP, port),
-			Net:  "udp",
-		},
+			Net:  "tcp",
+		}
+	}
+
+	return &ProxyDNS{
+		port:           port,
+		udpServer:      udpServer,
+		tcpServer:      tcpServer,
 		quit:           make(chan struct{}),
 		resolveToIP:    resolveIP,
 		config:         cfg,
@@ -78,33 +93,19 @@ func (p *ProxyDNS) Start() error {
 
 	dns.HandleFunc(".", p.HandleRequest)
 
-	errChan := make(chan error, 1)
+	logger.Log.Infof(
+		"DNS server starting on %s:%d, resolving *.svc.cluster.local to %s, forwarding other queries to system DNS",
+		p.initialBindIP,
+		p.port,
+		p.resolveToIP,
+	)
 
-	go func() {
-		logger.Log.Infof(
-			"DNS server starting on %s:%d, resolving *.svc.cluster.local to %s, forwarding other queries to system DNS",
-			p.initialBindIP,
-			p.port,
-			p.resolveToIP,
-		)
-		err := p.server.ListenAndServe()
-		if err != nil {
-			logger.Log.Errorf("DNS server failed: %v", err)
-			errChan <- err
-		} else {
-			errChan <- nil
-		}
-	}()
-
-	select {
-	case err := <-errChan:
-		if err != nil {
-			return fmt.Errorf("DNS server failed to start: %w", err)
-		}
-		logger.Log.Infof("DNS server successfully started on %s", p.server.Addr)
-	case <-time.After(1 * time.Second):
-		logger.Log.Infof("DNS server appears to be running on %s", p.server.Addr)
+	if err := p.startServers(p.initialBindIP, false); err != nil {
+		return fmt.Errorf("DNS server failed to start: %w", err)
 	}
+
+	logger.Log.Infof("DNS servers successfully started on %s:%d (UDP%s)",
+		p.initialBindIP, p.port, p.tcpEnabledSuffix())
 
 	p.running = true
 
@@ -117,11 +118,10 @@ func (p *ProxyDNS) Start() error {
 	}
 
 	p.interfaceManager = interfaceManager
-
 	return nil
 }
 
-// RebindToVirtualInterface rebinds the DNS server to the virtual interface IP.
+// RebindToVirtualInterface rebinds the DNS servers to the virtual interface IP.
 func (p *ProxyDNS) RebindToVirtualInterface(virtualInterfaceIP string) error {
 	if !p.running {
 		return errors.New("DNS server is not running")
@@ -131,96 +131,44 @@ func (p *ProxyDNS) RebindToVirtualInterface(virtualInterfaceIP string) error {
 		return errors.New("virtual interface IP is required")
 	}
 
-	if err := p.server.Shutdown(); err != nil {
-		return fmt.Errorf("failed to shutdown current DNS server: %w", err)
+	// Shutdown existing servers
+	p.shutdownServers()
+
+	// Create and assign new servers
+	p.udpServer, p.tcpServer = p.createServers(virtualInterfaceIP)
+
+	// Start the new servers
+	if err := p.startServers(virtualInterfaceIP, true); err != nil {
+		logger.Log.Warnf(
+			"Failed to rebind to virtual interface, falling back to %s: %v",
+			p.initialBindIP,
+			err,
+		)
+		return p.fallbackToOriginalIP()
 	}
 
-	newServer := &dns.Server{
-		Addr: fmt.Sprintf("%s:%d", virtualInterfaceIP, p.port),
-		Net:  "udp",
-	}
+	logger.Log.Infof("DNS servers successfully rebound to virtual interface %s:%d (UDP%s)",
+		virtualInterfaceIP, p.port, p.tcpEnabledSuffix())
 
-	errChan := make(chan error, 1)
-	go func() {
-		logger.Log.Infof(
-			"DNS server rebinding to virtual interface %s:%d",
-			virtualInterfaceIP,
-			p.port,
-		)
-		err := newServer.ListenAndServe()
-		if err != nil {
-			logger.Log.Errorf("DNS server rebind failed: %v", err)
-			errChan <- err
-		} else {
-			errChan <- nil
-		}
-	}()
-
-	select {
-	case err := <-errChan:
-		if err != nil {
-			logger.Log.Warnf(
-				"Failed to rebind to virtual interface, falling back to %s: %v",
-				p.initialBindIP,
-				err,
-			)
-			return p.fallbackToOriginalIP()
-		}
-		logger.Log.Infof(
-			"DNS server successfully rebound to virtual interface %s:%d",
-			virtualInterfaceIP,
-			p.port,
-		)
-	case <-time.After(1 * time.Second):
-		logger.Log.Infof(
-			"DNS server appears to be running on virtual interface %s:%d",
-			virtualInterfaceIP,
-			p.port,
-		)
-	}
-
-	p.server = newServer
 	return nil
 }
 
-// fallbackToOriginalIP restarts the DNS server on the original bind IP.
+// fallbackToOriginalIP restarts the DNS servers on the original bind IP.
 func (p *ProxyDNS) fallbackToOriginalIP() error {
-	if err := p.server.Shutdown(); err != nil {
-		logger.Log.Warnf("Failed to shutdown server during fallback: %v", err)
+	// Attempt to shutdown current servers gracefully
+	p.shutdownServers()
+
+	// Create and assign new servers for original IP
+	p.udpServer, p.tcpServer = p.createServers(p.initialBindIP)
+
+	// Start servers on original IP
+	if err := p.startServers(p.initialBindIP, false); err != nil {
+		return fmt.Errorf("failed to fallback to original IP: %w", err)
 	}
 
-	newServer := &dns.Server{
-		Addr: fmt.Sprintf("%s:%d", p.initialBindIP, p.port),
-		Net:  "udp",
-	}
+	logger.Log.Infof("DNS servers successfully fell back to %s:%d (UDP%s)",
+		p.initialBindIP, p.port, p.tcpEnabledSuffix())
 
-	errChan := make(chan error, 1)
-	go func() {
-		logger.Log.Infof("DNS server falling back to %s:%d", p.initialBindIP, p.port)
-		err := newServer.ListenAndServe()
-		if err != nil {
-			logger.Log.Errorf("DNS server fallback failed: %v", err)
-			errChan <- err
-		} else {
-			errChan <- nil
-		}
-	}()
-
-	select {
-	case err := <-errChan:
-		if err != nil {
-			return fmt.Errorf("failed to fallback to original IP: %w", err)
-		}
-		logger.Log.Infof("DNS server successfully fell back to %s:%d", p.initialBindIP, p.port)
-	case <-time.After(1 * time.Second):
-		logger.Log.Infof(
-			"DNS server appears to be running on fallback IP %s:%d",
-			p.initialBindIP,
-			p.port,
-		)
-	}
-
-	p.server = newServer
 	return nil
 }
 
@@ -245,7 +193,32 @@ func (p *ProxyDNS) Stop() error {
 		return fmt.Errorf("failed to revert DNS: %w", err)
 	}
 
-	return p.server.Shutdown()
+	// Shutdown both UDP and TCP servers
+	var udpErr, tcpErr error
+
+	if p.udpServer != nil {
+		udpErr = p.udpServer.Shutdown()
+		if udpErr != nil {
+			logger.Log.Warnf("Failed to shutdown UDP DNS server: %v", udpErr)
+		}
+	}
+
+	if p.tcpServer != nil {
+		tcpErr = p.tcpServer.Shutdown()
+		if tcpErr != nil {
+			logger.Log.Warnf("Failed to shutdown TCP DNS server: %v", tcpErr)
+		}
+	}
+
+	// Return first error encountered, if any
+	if udpErr != nil {
+		return fmt.Errorf("failed to shutdown UDP server: %w", udpErr)
+	}
+	if tcpErr != nil {
+		return fmt.Errorf("failed to shutdown TCP server: %w", tcpErr)
+	}
+
+	return nil
 }
 
 // GetVirtualInterfaceIP returns the IP of the DNS virtual interface if one was created.
@@ -388,4 +361,114 @@ func (p *ProxyDNS) addIPRecord(q dns.Question, m *dns.Msg, ip net.IP, name strin
 		return
 	}
 	m.Answer = append(m.Answer, rr)
+}
+
+// tcpEnabledSuffix returns "+TCP" if TCP is enabled, empty string otherwise.
+func (p *ProxyDNS) tcpEnabledSuffix() string {
+	if p.tcpServer != nil {
+		return tcpSuffix
+	}
+	return ""
+}
+
+// startServers starts both UDP and TCP servers with error handling.
+func (p *ProxyDNS) startServers(bindIP string, isRebind bool) error {
+	errChan := make(chan error, 2)
+	serversCount := 1
+
+	if p.tcpServer != nil {
+		serversCount = 2
+	}
+
+	// Start UDP server
+	go p.startUDPServer(bindIP, errChan, isRebind)
+
+	// Start TCP server if enabled
+	if p.tcpServer != nil {
+		go p.startTCPServer(bindIP, errChan, isRebind)
+	}
+
+	// Wait for servers to start
+	return p.waitForServersToStart(serversCount, errChan)
+}
+
+// startUDPServer starts the UDP server.
+func (p *ProxyDNS) startUDPServer(bindIP string, errChan chan<- error, isRebind bool) {
+	action := "starting"
+	if isRebind {
+		action = "rebinding"
+	}
+
+	logger.Log.Infof("DNS UDP server %s on %s:%d", action, bindIP, p.port)
+
+	if err := p.udpServer.ListenAndServe(); err != nil {
+		logger.Log.Errorf("DNS UDP server %s failed: %v", action, err)
+		errChan <- fmt.Errorf("UDP server %s failed: %w", action, err)
+	} else {
+		errChan <- nil
+	}
+}
+
+// startTCPServer starts the TCP server.
+func (p *ProxyDNS) startTCPServer(bindIP string, errChan chan<- error, isRebind bool) {
+	action := "starting"
+	if isRebind {
+		action = "rebinding"
+	}
+
+	logger.Log.Infof("DNS TCP server %s on %s:%d", action, bindIP, p.port)
+
+	if err := p.tcpServer.ListenAndServe(); err != nil {
+		logger.Log.Errorf("DNS TCP server %s failed: %v", action, err)
+		errChan <- fmt.Errorf("TCP server %s failed: %w", action, err)
+	} else {
+		errChan <- nil
+	}
+}
+
+// waitForServersToStart waits for servers to start and returns first error if any.
+func (p *ProxyDNS) waitForServersToStart(serverCount int, errChan <-chan error) error {
+	for range serverCount {
+		select {
+		case err := <-errChan:
+			if err != nil {
+				return err
+			}
+		case <-time.After(1 * time.Second):
+			// Server appears to be running
+		}
+	}
+	return nil
+}
+
+// shutdownServers gracefully shuts down both UDP and TCP servers.
+func (p *ProxyDNS) shutdownServers() {
+	if p.udpServer != nil {
+		if err := p.udpServer.Shutdown(); err != nil {
+			logger.Log.Warnf("Failed to shutdown UDP server: %v", err)
+		}
+	}
+	if p.tcpServer != nil {
+		if err := p.tcpServer.Shutdown(); err != nil {
+			logger.Log.Warnf("Failed to shutdown TCP server: %v", err)
+		}
+	}
+}
+
+// createServers creates new UDP and TCP server instances.
+func (p *ProxyDNS) createServers(bindIP string) (*dns.Server, *dns.Server) {
+	udpServer := &dns.Server{
+		Addr: fmt.Sprintf("%s:%d", bindIP, p.port),
+		Net:  "udp",
+	}
+
+	var tcpServer *dns.Server
+	if p.config.Network.DNSEnableTCP {
+		tcpServer = &dns.Server{
+			Addr: fmt.Sprintf("%s:%d", bindIP, p.port),
+			Net:  "tcp",
+		}
+	}
+
+	return udpServer, tcpServer
 }

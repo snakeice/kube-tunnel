@@ -279,8 +279,8 @@ func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Respon
 	// HTTP/2 doesn't use chunked encoding and can cause issues with large responses
 	protocols := []string{"http/1.1"}
 	if pft.isGRPC {
-		// For gRPC, prefer h2c but fallback to HTTP/1.1
-		protocols = []string{"h2c", "http/1.1"}
+		// For gRPC, only use h2c (HTTP/2 cleartext) - never fallback to HTTP/1.1
+		protocols = []string{"h2c"}
 	}
 
 	var lastErr error
@@ -568,8 +568,23 @@ func createReverseProxy(
 	localPort int,
 	isGRPC bool,
 ) *CustomReverseProxy {
-	// Create a simple, reliable transport
-	transport := createSimpleTransport(localIP, localPort)
+	// Create appropriate transport based on request type
+	var transport http.RoundTripper
+	if isGRPC {
+		// For gRPC, create h2c (HTTP/2 cleartext) transport
+		transport = createH2CTransport(func(network, addr string) (net.Conn, error) {
+			var targetAddr string
+			if strings.Contains(localIP, ":") {
+				targetAddr = fmt.Sprintf("[%s]:%d", localIP, localPort)
+			} else {
+				targetAddr = fmt.Sprintf("%s:%d", localIP, localPort)
+			}
+			return net.DialTimeout(network, targetAddr, 1*time.Second)
+		})
+	} else {
+		// For HTTP, use simple transport
+		transport = createSimpleTransport(localIP, localPort)
+	}
 
 	// Create connection pool for faster requests (max 10 connections)
 	connPool := newConnectionPool(localIP, localPort, 10)
