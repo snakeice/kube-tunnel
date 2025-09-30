@@ -143,6 +143,23 @@ release:
 
     **Full Changelog**: https://github.com/snakeice/kube-tunnel/compare/{{ .PreviousTag }}...{{ .Tag }}
 
+dockers_v2:
+  - image_templates:
+      - "ghcr.io/snakeice/kube-tunnel:{{ .Version }}-amd64"
+      - "ghcr.io/snakeice/kube-tunnel:latest-amd64"
+    dockerfile: Dockerfile
+    use: buildx
+    flags:
+      - "--pull"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source=https://github.com/snakeice/kube-tunnel"
+      - "--label=org.opencontainers.image.description=High-performance Kubernetes service proxy with intelligent protocol detection"
+      - "--label=org.opencontainers.image.licenses=MIT"
+      - "--platform=linux/amd64"
+
 dockers:
   - image_templates:
       - "ghcr.io/snakeice/kube-tunnel:{{ .Version }}-amd64"
