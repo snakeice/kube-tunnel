@@ -82,3 +82,37 @@ func extractOriginalPort(r *http.Request) int {
 	}
 	return 0
 }
+
+// isLocalRequest checks if the request is targeting localhost/127.0.0.1
+// instead of a Kubernetes service (*.svc.cluster.local)
+func isLocalRequest(r *http.Request) bool {
+	host := r.Host
+
+	// Remove port if present
+	if idx := strings.Index(host, ":"); idx != -1 {
+		host = host[:idx]
+	}
+
+	// Check for localhost and loopback addresses
+	if host == "localhost" ||
+		host == "127.0.0.1" ||
+		strings.HasPrefix(host, "127.") ||
+		host == "::1" ||
+		host == "" {
+		return true
+	}
+
+	// Check if it's NOT a Kubernetes service domain
+	// Valid Kubernetes services end with .svc.cluster.local
+	if !strings.Contains(host, ".svc.cluster.local") && !strings.Contains(host, ".svc.") {
+		// It's not a Kubernetes service, but could be an IP
+		// Check if it looks like an IP address
+		parts := strings.Split(host, ".")
+		if len(parts) == 4 {
+			// Might be an IPv4 address - consider it local/non-k8s
+			return true
+		}
+	}
+
+	return false
+}

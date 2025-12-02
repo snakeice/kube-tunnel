@@ -122,6 +122,14 @@ func (p *Proxy) handleProxyRegular(w http.ResponseWriter, r *http.Request, start
 		return
 	}
 
+	// Check if this is a request to localhost/127.0.0.1 (not a Kubernetes service)
+	// These should not be proxied to Kubernetes
+	if isLocalRequest(r) {
+		http.Error(w, "This proxy only handles Kubernetes service requests (*.svc.cluster.local)", http.StatusBadRequest)
+		logger.Log.Warnf("Rejected non-Kubernetes request to: %s", r.Host)
+		return
+	}
+
 	service, namespace, err := parseAndValidateHost(w, r, isGRPC)
 	if err != nil {
 		return
