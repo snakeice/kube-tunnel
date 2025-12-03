@@ -266,16 +266,40 @@ func (c *cacheImpl) setupPortForwardWithHint(
 		"local_port": localPort,
 	}).Info("🔍 Allocated free port for port-forward")
 
-	// Find pod and target port for the service
-	podName, targetPort, config, err := c.findPodForService(service, namespace)
+	// Get Kubernetes config
+	config, err := k8s.GetKubeConfig()
 	if err != nil {
-		return "", 0, nil, err
+		return "", 0, nil, fmt.Errorf("failed to get k8s config: %w", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return "", 0, nil, fmt.Errorf("failed to create k8s client: %w", err)
+	}
+
+	// Store client for reuse
+	c.client = clientset
+
+	logger.Log.WithFields(logrus.Fields{
+		"service":   service,
+		"namespace": namespace,
+	}).Info("Looking up service: " + namespace + "/" + service)
+
+	// Find pod and target port for the service
+	podName, targetPort, err := k8s.GetPodNameForService(clientset, namespace, service)
+	if err != nil {
+		return "", 0, nil, fmt.Errorf("failed to lookup pods for service %s.%s: %w",
+			service, namespace, err)
+	}
+
+	if podName == "" {
+		return "", 0, nil, fmt.Errorf("no pods found for service %s.%s", service, namespace)
 	}
 
 	// Create context with cancel for port-forward
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Start port forwarding
+	// Use pod port forwarding (works with both regular and Istio-enabled clusters)
 	go c.runPortForward(ctx, config, service, namespace, podName, localIP, localPort, targetPort)
 
 	// Wait for port-forward to be ready
@@ -369,42 +393,6 @@ func (c *cacheImpl) allocatePort(ip string, preferredPort int) (int, error) {
 
 	// Allocate a random free port
 	return tools.GetFreePortOnIP(ip)
-}
-
-// findPodForService looks up a pod for the given service and returns pod name, target port and K8s config.
-func (c *cacheImpl) findPodForService(
-	service, namespace string,
-) (string, int, *rest.Config, error) {
-	// Look up the pod to forward to
-	config, err := k8s.GetKubeConfig()
-	if err != nil {
-		return "", 0, nil, fmt.Errorf("failed to get k8s config: %w", err)
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return "", 0, nil, fmt.Errorf("failed to create k8s client: %w", err)
-	}
-
-	// Store client for reuse
-	c.client = clientset
-
-	logger.Log.WithFields(logrus.Fields{
-		"service":   service,
-		"namespace": namespace,
-	}).Info("Looking up service: " + namespace + "/" + service)
-
-	podName, targetPort, err := k8s.GetPodNameForService(clientset, namespace, service)
-	if err != nil {
-		return "", 0, nil, fmt.Errorf("failed to lookup pods for service %s.%s: %w",
-			service, namespace, err)
-	}
-
-	if podName == "" {
-		return "", 0, nil, fmt.Errorf("no pods found for service %s.%s", service, namespace)
-	}
-
-	return podName, targetPort, config, nil
 }
 
 // runPortForward starts the port forwarding process in a goroutine.

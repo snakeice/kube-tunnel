@@ -121,21 +121,72 @@ func (vi *VirtualInterface) interfaceExists() bool {
 	return cmd.Run() == nil
 }
 
-// SetupDNS configures DNS resolution (stub for macOS - uses /etc/resolver/).
+// SetupDNS configures DNS resolution using macOS /etc/resolver/ mechanism.
 func (vi *VirtualInterface) SetupDNS(domain string, port int) error {
 	if !vi.created {
 		return errors.New("virtual interface not created")
 	}
 
-	logger.Log.Infof("DNS setup for macOS should use /etc/resolver/ mechanism")
-	logger.Log.Infof("Create /etc/resolver/cluster.local with content:")
-	logger.Log.Infof("  nameserver %s", vi.ip)
-	logger.Log.Infof("  port %d", port)
+	logger.Log.Infof("Configuring macOS DNS resolver for domain: %s", domain)
+
+	// Create /etc/resolver directory if it doesn't exist
+	resolverDir := "/etc/resolver"
+	if err := vi.ensureResolverDirectory(resolverDir); err != nil {
+		return fmt.Errorf("failed to create resolver directory: %w", err)
+	}
+
+	// Create resolver configuration file for the domain
+	resolverFile := fmt.Sprintf("%s/%s", resolverDir, domain)
+	resolverConfig := fmt.Sprintf("nameserver %s\nport %d\n", vi.ip, port)
+
+	// Write resolver configuration
+	if err := vi.writeResolverConfig(resolverFile, resolverConfig); err != nil {
+		return fmt.Errorf("failed to write resolver config: %w", err)
+	}
+
+	logger.Log.Infof("DNS resolver configured: %s -> %s:%d", domain, vi.ip, port)
+	vi.configured = true
 
 	return nil
 }
 
-// Cleanup removes the virtual interface alias.
+// ensureResolverDirectory ensures /etc/resolver directory exists.
+func (vi *VirtualInterface) ensureResolverDirectory(dir string) error {
+	// Check if directory exists
+	cmd := exec.Command("test", "-d", dir)
+	if err := cmd.Run(); err != nil {
+		// Directory doesn't exist, create it
+		logger.Log.Debugf("Creating resolver directory: %s", dir)
+		cmd = exec.Command("sudo", "mkdir", "-p", dir)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("mkdir failed: %v, output: %s", err, string(out))
+		}
+		logger.Log.Debugf("Resolver directory created: %s", dir)
+	}
+	return nil
+}
+
+// writeResolverConfig writes the resolver configuration file.
+func (vi *VirtualInterface) writeResolverConfig(filePath, content string) error {
+	// Use tee to write with sudo privileges
+	// echo content | sudo tee file > /dev/null
+	cmd := exec.Command("sudo", "tee", filePath)
+	cmd.Stdin = strings.NewReader(content)
+
+	logger.Log.Debugf("Writing resolver config to: %s", filePath)
+	logger.Log.Debugf("Resolver config content:\n%s", content)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tee command failed: %v, output: %s", err, string(out))
+	}
+
+	logger.Log.Debugf("Resolver configuration written to: %s", filePath)
+	return nil
+}
+
+// Cleanup removes the virtual interface alias and resolver configuration.
 func (vi *VirtualInterface) Cleanup() error {
 	if !vi.created {
 		logger.Log.Debug("Virtual interface not created, skipping cleanup")
@@ -143,6 +194,17 @@ func (vi *VirtualInterface) Cleanup() error {
 	}
 
 	logger.Log.Infof("Cleaning up virtual interface alias for IP %s", vi.ip)
+
+	// Remove resolver configuration file if it was configured
+	if vi.configured {
+		// Extract domain from interface name (e.g., kube-dns0 -> svc.cluster.local)
+		// For now, we'll use a fixed domain name since that's what we're configuring
+		resolverFile := "/etc/resolver/svc.cluster.local"
+		if err := vi.removeResolverConfig(resolverFile); err != nil {
+			logger.Log.Warnf("Failed to remove resolver config: %v", err)
+			// Don't return error, continue cleanup
+		}
+	}
 
 	// Remove alias: sudo ifconfig lo0 -alias <ip>
 	cmd := exec.Command("sudo", "ifconfig", "lo0", "-alias", vi.ip)
@@ -159,6 +221,26 @@ func (vi *VirtualInterface) Cleanup() error {
 	vi.created = false
 	vi.configured = false
 
+	return nil
+}
+
+// removeResolverConfig removes the resolver configuration file.
+func (vi *VirtualInterface) removeResolverConfig(filePath string) error {
+	// Check if file exists first
+	cmd := exec.Command("test", "-f", filePath)
+	if err := cmd.Run(); err != nil {
+		logger.Log.Debugf("Resolver config file doesn't exist: %s", filePath)
+		return nil // Not an error if file doesn't exist
+	}
+
+	logger.Log.Debugf("Removing resolver config: %s", filePath)
+	cmd = exec.Command("sudo", "rm", "-f", filePath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("rm command failed: %v, output: %s", err, string(out))
+	}
+
+	logger.Log.Infof("Resolver configuration removed: %s", filePath)
 	return nil
 }
 

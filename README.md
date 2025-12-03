@@ -49,9 +49,17 @@ sudo ./kube-tunnel -virtual -virtual-ip=10.8.0.1 -port=8080
 
 **macOS Notes:**
 - ✅ Native ARM64 support (Apple Silicon M2/M3)
-- ⚠️ Virtual interfaces require `sudo` for `ifconfig` operations
+- ⚠️ Virtual interfaces require `sudo` for `ifconfig` operations and DNS resolver configuration
+- 🌐 DNS resolution uses `/etc/resolver/` mechanism (automatically configured)
 - ℹ️ Universal port handling uses `pfctl` instead of `iptables`
 - 💡 For development, use `-virtual=false` to avoid sudo requirement
+
+**DNS Resolution on macOS:**
+When running with `-virtual` mode, kube-tunnel automatically:
+1. Creates a loopback alias for the DNS server IP
+2. Configures `/etc/resolver/svc.cluster.local` to point to the DNS server
+3. Enables system-wide resolution of `*.svc.cluster.local` domains
+4. Cleans up all configurations on shutdown
 
 #### 🐧 Linux
 
@@ -631,22 +639,38 @@ sudo pacman -S iproute2
 ### 🔍 DNS Resolution Issues
 
 ```bash
+# macOS - Check if DNS resolver configuration exists
+ls -la /etc/resolver/
+cat /etc/resolver/svc.cluster.local
+
+# macOS - Check if loopback alias exists
+ifconfig lo0 | grep "inet "
+
+# macOS - Test DNS resolution through system resolver
+dscacheutil -q host -a name service.namespace.svc.cluster.local
+scutil --dns | grep "svc.cluster.local"
+
 # macOS - Check if DNS server is running
-lsof -nP -iTCP:5353 -sTCP:LISTEN
+lsof -nP -iUDP | grep kube-tunnel
+ps aux | grep kube-tunnel
 
 # Linux - Check if DNS server is running
 netstat -tulnp | grep :5353
 
-# Manual DNS testing (find the actual DNS port in logs)
-dig @127.0.0.1 -p 5353 service.namespace.svc.cluster.local
+# Manual DNS testing (find the actual DNS port in kube-tunnel logs)
+dig @127.0.0.1 -p <PORT> service.namespace.svc.cluster.local
 
-# Test virtual interface DNS (if enabled)
-export KTUN_USE_VIRTUAL=true
-LOG_LEVEL=debug ./kube-tunnel
+# Test with curl (should work if DNS is configured correctly)
+curl -v http://service.namespace.svc.cluster.local
 
-# Debug DNS resolution
-export KTUN_DNS_IP=127.0.0.1
-LOG_LEVEL=debug ./kube-tunnel 2>&1 | grep -i dns
+# Test virtual interface DNS (requires sudo on macOS)
+sudo ./kube-tunnel -virtual -verbose
+
+# Debug DNS resolution with full logging
+LOG_LEVEL=debug sudo ./kube-tunnel -virtual 2>&1 | grep -E "DNS|resolver|interface"
+
+# If DNS resolution fails, verify kube-tunnel is running with virtual mode
+# and that /etc/resolver/svc.cluster.local points to the correct IP and port
 ```
 
 ### ❌ Service Not Found
