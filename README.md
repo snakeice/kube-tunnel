@@ -14,7 +14,8 @@ Transform how you access Kubernetes services with DNS-style routing and zero-con
 - ⚡ **Auto Port-Forwarding** — Automatic, cached port-forwards to healthy pods
 - 🌐 **Virtual DNS Interface** — Isolated DNS mode with UDP+TCP support to avoid VPN/hosts conflicts
 - 🏠 **Free Local IP** — Smart allocation (127.0.0.2+) to prevent localhost collisions
-- 🔀 **Universal Port Handling** — Handle ALL ports on virtual interface with intelligent port matching (Linux) / graceful degradation (macOS)
+- 🔀 **Universal Port Handling** — Handle ALL ports on virtual interface with intelligent port matching (Linux) / multi-port listeners (macOS)
+- 🎯 **Smart Port Resolution** — Automatically resolves service ports based on requested port (e.g., `:8081` maps to correct target port)
 - 📊 **Health Monitoring** — Lightweight monitoring with Prometheus metrics
 - 🔧 **Zero Configuration** — Works out-of-the-box with sensible defaults
 - 🍎 **Native macOS Support** — ARM64 (Apple Silicon M2/M3) and Intel with platform-specific optimizations
@@ -145,7 +146,14 @@ curl http://metrics.monitoring.svc.cluster.local:9090/metrics
 
 # gRPC services on their native ports
 grpcurl -plaintext grpc-service.default.svc.cluster.local:50051 list
+
+# Access services with multiple ports (e.g., main app + metrics)
+curl http://my-service.default.svc.cluster.local       # Port 80 (default)
+curl http://my-service.default.svc.cluster.local:8081  # Metrics port
 ```
+
+**macOS Supported Ports:**
+On macOS, the following common ports are automatically handled: `80`, `8080`, `8081`, `9090`, `3000`, `5000`, `8000`, `8443`, `9000`, `8888`, `3001`
 
 #### 🍎 macOS (Optimized Support)
 
@@ -165,10 +173,11 @@ sudo ./kube-tunnel -virtual
 | Feature | Linux | macOS |
 |---------|-------|-------|
 | **Virtual Interfaces** | `ip` command (dummy interfaces) | `ifconfig` (lo0 aliases) |
-| **Traffic Redirection** | `iptables` (full support) | `pfctl` (graceful degradation) |
-| **Universal Port Handling** | ✅ Full support | ⚠️ Limited (logs warning) |
+| **Traffic Redirection** | `iptables` (full support) | Multi-port listeners |
+| **Universal Port Handling** | ✅ Full support (iptables) | ✅ Common ports (8080, 8081, 9090, etc.) |
 | **DNS Resolution** | ✅ Full support | ✅ Full support |
 | **Port Forwarding** | ✅ Full support | ✅ Full support |
+| **Service Port Mapping** | ✅ Full support | ✅ Full support |
 
 **Architecture Benefits:**
 
@@ -513,11 +522,32 @@ graph TD
 1. **DNS Interception** — Captures `*.svc.cluster.local` DNS queries via local DNS server
 2. **Protocol Detection** — Automatically detects HTTP/1.1, HTTP/2, gRPC, and HTTPS protocols
 3. **Service Discovery** — Uses Kubernetes API to find services and select healthy pods
-4. **Smart Port Forwarding** — Creates and caches port-forwards with intelligent port matching
-5. **Virtual Interface** — Optional enhanced mode supporting any port on dedicated interface
-6. **Health Monitoring** — Continuous health checks with Prometheus metrics and dashboard
-7. **Request Proxying** — Forwards requests with protocol-specific optimizations
-8. **Response Delivery** — Returns responses transparently with performance metrics
+4. **Smart Port Resolution** — Resolves the correct target port based on the requested service port (e.g., `:8081` → correct container port)
+5. **Smart Port Forwarding** — Creates and caches port-forwards with intelligent port matching
+6. **Virtual Interface** — Optional enhanced mode supporting any port on dedicated interface
+7. **Multi-Port Listeners (macOS)** — Automatically listens on common ports (8080, 8081, 9090, etc.)
+8. **Health Monitoring** — Continuous health checks with Prometheus metrics and dashboard
+9. **Request Proxying** — Forwards requests with protocol-specific optimizations
+10. **Response Delivery** — Returns responses transparently with performance metrics
+
+### Service Port Resolution
+
+When accessing a service on a specific port, kube-tunnel automatically resolves the correct target port:
+
+```bash
+# Example: Service with multiple ports
+# Service: my-service
+#   - Port 80 → TargetPort 8080 (main app)
+#   - Port 8081 → TargetPort 8081 (metrics)
+
+curl http://my-service.default.svc.cluster.local       # Uses port 80 → forwards to 8080
+curl http://my-service.default.svc.cluster.local:8081  # Uses port 8081 → forwards to 8081
+```
+
+This is particularly useful for:
+- Services exposing multiple ports (app + metrics)
+- Istio-enabled services with sidecar ports
+- Services with named ports (e.g., `http`, `grpc`, `metrics`)
 
 ## 📊 Monitoring & Health
 
@@ -555,15 +585,17 @@ sudo ./kube-tunnel -virtual
 ./kube-tunnel -virtual=false -port=8080
 ```
 
-#### "pfctl: Operation not permitted"
+#### Port Connection Refused
+
+If you get "connection refused" when accessing specific ports:
 
 ```bash
-# pfctl operations require sudo
-sudo ./kube-tunnel -virtual
+# Check which ports kube-tunnel is listening on
+# Look for "Universal port handler started on X additional ports" in logs
 
-# Check if pfctl is available
-which pfctl
-pfctl -s rules  # May require sudo
+# Supported ports on macOS: 80, 8080, 8081, 9090, 3000, 5000, 8000, 8443, 9000, 8888, 3001
+# For other ports, use the main proxy port:
+curl -H "Host: my-service.default.svc.cluster.local" http://localhost:80/
 ```
 
 #### "ifconfig: command not found"

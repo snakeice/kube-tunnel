@@ -75,11 +75,29 @@ func parseAndValidateHost(
 }
 
 func extractOriginalPort(r *http.Request) int {
+	// First try the explicit header
 	if portStr := r.Header.Get("X-Original-Port"); portStr != "" {
 		if port, err := strconv.Atoi(portStr); err == nil {
 			return port
 		}
 	}
+
+	// Try X-Forwarded-Port header
+	if portStr := r.Header.Get("X-Forwarded-Port"); portStr != "" {
+		if port, err := strconv.Atoi(portStr); err == nil {
+			return port
+		}
+	}
+
+	// Extract port from Host header (e.g., service.namespace.svc.cluster.local:8080)
+	host := r.Host
+	if idx := strings.LastIndex(host, ":"); idx != -1 {
+		portStr := host[idx+1:]
+		if port, err := strconv.Atoi(portStr); err == nil && port > 0 && port < 65536 {
+			return port
+		}
+	}
+
 	return 0
 }
 

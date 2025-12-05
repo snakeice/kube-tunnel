@@ -138,7 +138,14 @@ func (c *cacheImpl) EnsurePortForwardWithHint(
 	preferredPort int,
 ) (string, int, error) {
 	startTime := time.Now()
-	key := fmt.Sprintf("%s.%s", service, namespace)
+
+	// Include port in key to cache separate port-forwards for different ports
+	var key string
+	if preferredPort > 0 {
+		key = fmt.Sprintf("%s.%s:%d", service, namespace, preferredPort)
+	} else {
+		key = fmt.Sprintf("%s.%s", service, namespace)
+	}
 
 	c.Lock()
 	defer c.Unlock()
@@ -286,7 +293,15 @@ func (c *cacheImpl) setupPortForwardWithHint(
 	}).Info("Looking up service: " + namespace + "/" + service)
 
 	// Find pod and target port for the service
-	podName, targetPort, err := k8s.GetPodNameForService(clientset, namespace, service)
+	var podName string
+	var targetPort int
+	if preferredPort > 0 {
+		// Use the new function that considers the requested port
+		podName, targetPort, err = k8s.GetPodNameForServiceWithPort(clientset, namespace, service, preferredPort)
+	} else {
+		// Fall back to default behavior
+		podName, targetPort, err = k8s.GetPodNameForService(clientset, namespace, service)
+	}
 	if err != nil {
 		return "", 0, nil, fmt.Errorf("failed to lookup pods for service %s.%s: %w",
 			service, namespace, err)

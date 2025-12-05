@@ -22,3 +22,6 @@ tmp/
 server.crt
 server.key
 dist/
+
+# Snyk Security Extension - AI Rules (auto-generated)
+.cursor/rules/snyk_rules.mdc

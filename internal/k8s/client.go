@@ -192,3 +192,102 @@ func GetServicePort(clientset *kubernetes.Clientset, namespace, service string) 
 	// Default to port 80 if we can't determine the port
 	return 80, nil
 }
+
+// GetPodNameForServiceWithPort finds a running pod for a service and resolves the target port
+// based on a requested service port.
+func GetPodNameForServiceWithPort(
+	clientset *kubernetes.Clientset,
+	namespace, service string,
+	requestedPort int,
+) (string, int, error) {
+	logger.Log.Infof("Looking up service: %s/%s for port %d", namespace, service, requestedPort)
+
+	svc, err := clientset.CoreV1().
+		Services(namespace).
+		Get(context.TODO(), service, metav1.GetOptions{})
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to get service %s/%s: %w", namespace, service, err)
+	}
+
+	selector := svc.Spec.Selector
+	if len(selector) == 0 {
+		return "", 0, fmt.Errorf("service %s/%s has no selector", namespace, service)
+	}
+
+	labelSelector := []string{}
+	for k, v := range selector {
+		labelSelector = append(labelSelector, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	selectorString := strings.Join(labelSelector, ",")
+	pods, err := clientset.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{
+		LabelSelector: selectorString,
+	})
+	if err != nil {
+		return "", 0, fmt.Errorf(
+			"failed to list pods for service %s/%s: %w",
+			namespace,
+			service,
+			err,
+		)
+	}
+
+	// Find the service port that matches the requested port
+	var targetPort intstr.IntOrString
+	foundPort := false
+	for _, port := range svc.Spec.Ports {
+		if int(port.Port) == requestedPort {
+			targetPort = port.TargetPort
+			foundPort = true
+			logger.Log.Infof("Found matching service port %d -> target %v for %s/%s",
+				requestedPort, targetPort, namespace, service)
+			break
+		}
+	}
+
+	// If no matching port found, fall back to first port
+	if !foundPort {
+		if len(svc.Spec.Ports) > 0 {
+			targetPort = svc.Spec.Ports[0].TargetPort
+			logger.Log.Warnf("Requested port %d not found, falling back to first service port for %s/%s",
+				requestedPort, namespace, service)
+		} else {
+			return "", 0, fmt.Errorf("no ports defined for service %s/%s", namespace, service)
+		}
+	}
+
+	for _, pod := range pods.Items {
+		if pod.Status.Phase == "Running" {
+			switch targetPort.Type {
+			case intstr.Int:
+				resolvedPort := targetPort.IntValue()
+				logger.Log.Infof("Using numeric target port %d for service %s/%s (pod: %s)",
+					resolvedPort, namespace, service, pod.Name)
+				return pod.Name, resolvedPort, nil
+			case intstr.String:
+				port, found := findContainerPortByName(pod, targetPort.String())
+				if found {
+					logger.Log.Infof("Resolved named port %s to %d for service %s/%s (pod: %s)",
+						targetPort.String(), port, namespace, service, pod.Name)
+					return pod.Name, port, nil
+				}
+				logger.Log.Warnf("Could not resolve named port %s, checking application containers", targetPort.String())
+			}
+
+			// Try to find the application container port (not Istio sidecar)
+			port := findApplicationContainerPort(pod)
+			if port > 0 {
+				logger.Log.Infof("Found application container port %d for service %s/%s (pod: %s)",
+					port, namespace, service, pod.Name)
+				return pod.Name, port, nil
+			}
+
+			// Fallback to requested port if nothing else works
+			logger.Log.Warnf("Using requested port %d as fallback for service %s/%s (pod: %s)",
+				requestedPort, namespace, service, pod.Name)
+			return pod.Name, requestedPort, nil
+		}
+	}
+
+	return "", 0, fmt.Errorf("no running pod found for service %s/%s", namespace, service)
+}
