@@ -2,6 +2,7 @@
 
 # Virtual interface test script for kube-tunnel
 # Tests virtual interface creation, DNS resolution, and cleanup
+# Supports both Linux and macOS
 
 set -e
 
@@ -12,6 +13,23 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Detect platform
+OS_TYPE=$(uname -s)
+case "$OS_TYPE" in
+    Darwin*)
+        PLATFORM="macos"
+        LOOPBACK_INTERFACE="lo0"
+        ;;
+    Linux*)
+        PLATFORM="linux"
+        LOOPBACK_INTERFACE="lo"
+        ;;
+    *)
+        echo -e "${RED}❌ Unsupported platform: $OS_TYPE${NC}"
+        exit 1
+        ;;
+esac
+
 # Configuration
 VIRTUAL_INTERFACE_NAME=${VIRTUAL_INTERFACE_NAME:-"kube-dummy0-test"}
 VIRTUAL_INTERFACE_IP=${VIRTUAL_INTERFACE_IP:-"127.0.0.11"}
@@ -19,8 +37,10 @@ TEST_MODE=${1:-"quick"}
 
 echo -e "${BLUE}🧪 Virtual Interface Test Suite${NC}"
 echo "================================="
+echo "Platform: ${PLATFORM} (${OS_TYPE})"
 echo "Interface: ${VIRTUAL_INTERFACE_NAME}"
 echo "IP: ${VIRTUAL_INTERFACE_IP}"
+echo "Loopback: ${LOOPBACK_INTERFACE}"
 echo "Mode: ${TEST_MODE}"
 echo ""
 
@@ -35,9 +55,16 @@ check_privileges() {
 
 # Function to cleanup interface if it exists
 cleanup_interface() {
-    if ip addr show lo | grep -q "$VIRTUAL_INTERFACE_IP"; then
-        echo -e "${YELLOW}🧹 Cleaning up IP address from loopback interface${NC}"
-        ip addr del "$VIRTUAL_INTERFACE_IP/32" dev lo 2>/dev/null || true
+    if [ "$PLATFORM" == "macos" ]; then
+        if ifconfig "$LOOPBACK_INTERFACE" | grep -q "$VIRTUAL_INTERFACE_IP"; then
+            echo -e "${YELLOW}🧹 Cleaning up IP alias from loopback interface${NC}"
+            ifconfig "$LOOPBACK_INTERFACE" -alias "$VIRTUAL_INTERFACE_IP" 2>/dev/null || true
+        fi
+    else
+        if ip addr show "$LOOPBACK_INTERFACE" | grep -q "$VIRTUAL_INTERFACE_IP"; then
+            echo -e "${YELLOW}🧹 Cleaning up IP address from loopback interface${NC}"
+            ip addr del "$VIRTUAL_INTERFACE_IP/32" dev "$LOOPBACK_INTERFACE" 2>/dev/null || true
+        fi
     fi
 }
 
@@ -45,10 +72,18 @@ cleanup_interface() {
 create_test_interface() {
     echo -e "${YELLOW}🔧 Assigning IP to loopback interface${NC}"
 
-    # Add IP address to loopback interface
-    if ! ip addr add "$VIRTUAL_INTERFACE_IP/32" dev lo; then
-        echo -e "${RED}❌ Failed to add IP address to loopback interface${NC}"
-        return 1
+    if [ "$PLATFORM" == "macos" ]; then
+        # macOS: Add alias to lo0
+        if ! ifconfig "$LOOPBACK_INTERFACE" alias "$VIRTUAL_INTERFACE_IP" netmask 255.255.255.255; then
+            echo -e "${RED}❌ Failed to add IP alias to loopback interface${NC}"
+            return 1
+        fi
+    else
+        # Linux: Add IP address to lo
+        if ! ip addr add "$VIRTUAL_INTERFACE_IP/32" dev "$LOOPBACK_INTERFACE"; then
+            echo -e "${RED}❌ Failed to add IP address to loopback interface${NC}"
+            return 1
+        fi
     fi
 
     echo -e "${GREEN}✅ IP assigned successfully to loopback interface${NC}"
@@ -60,9 +95,16 @@ test_interface_config() {
     echo -e "${YELLOW}🔍 Testing interface configuration${NC}"
 
     # Check if IP is configured on loopback
-    if ! ip addr show lo | grep -q "$VIRTUAL_INTERFACE_IP"; then
-        echo -e "${RED}❌ IP address not configured on loopback interface${NC}"
-        return 1
+    if [ "$PLATFORM" == "macos" ]; then
+        if ! ifconfig "$LOOPBACK_INTERFACE" | grep -q "$VIRTUAL_INTERFACE_IP"; then
+            echo -e "${RED}❌ IP address not configured on loopback interface${NC}"
+            return 1
+        fi
+    else
+        if ! ip addr show "$LOOPBACK_INTERFACE" | grep -q "$VIRTUAL_INTERFACE_IP"; then
+            echo -e "${RED}❌ IP address not configured on loopback interface${NC}"
+            return 1
+        fi
     fi
 
     echo -e "${GREEN}✅ Interface configuration is correct${NC}"
@@ -156,9 +198,18 @@ run_comprehensive_tests() {
     # Test 5: Cleanup
     echo -e "${YELLOW}Test 5: Cleanup${NC}"
     cleanup_interface
-    if ip link show "$VIRTUAL_INTERFACE_NAME" &>/dev/null; then
-        echo -e "${RED}❌ Test 5 failed: Interface still exists after cleanup${NC}"
-        return 1
+
+    # Verify cleanup based on platform
+    if [ "$PLATFORM" == "macos" ]; then
+        if ifconfig "$LOOPBACK_INTERFACE" | grep -q "$VIRTUAL_INTERFACE_IP"; then
+            echo -e "${RED}❌ Test 5 failed: IP alias still exists after cleanup${NC}"
+            return 1
+        fi
+    else
+        if ip addr show "$LOOPBACK_INTERFACE" | grep -q "$VIRTUAL_INTERFACE_IP"; then
+            echo -e "${RED}❌ Test 5 failed: IP address still exists after cleanup${NC}"
+            return 1
+        fi
     fi
 
     echo -e "${GREEN}✅ All comprehensive virtual interface tests passed${NC}"
@@ -200,6 +251,7 @@ main() {
 case "${1:-}" in
     --help|-h)
         echo "Virtual interface test script for kube-tunnel"
+        echo "Supports both Linux and macOS"
         echo ""
         echo "Usage: $0 [mode]"
         echo ""
@@ -213,7 +265,11 @@ case "${1:-}" in
         echo "  VIRTUAL_INTERFACE_NAME  Interface name (default: kube-dummy0-test)"
         echo "  VIRTUAL_INTERFACE_IP    Interface IP (default: 127.0.0.11)"
         echo ""
-        echo "Note: This script requires root privileges or Docker group membership"
+        echo "Platform-specific behavior:"
+        echo "  Linux:  Uses 'ip' command to manage loopback (lo) addresses"
+        echo "  macOS:  Uses 'ifconfig' to manage loopback (lo0) aliases"
+        echo ""
+        echo "Note: This script requires root privileges (sudo)"
         exit 0
         ;;
     *)

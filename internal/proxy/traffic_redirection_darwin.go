@@ -60,11 +60,9 @@ func (pfm *DarwinTrafficRedirectionManager) CheckRequirements() error {
 		return fmt.Errorf("pfctl command not found: %w", err)
 	}
 
-	// Check if pfctl can be run (requires sudo)
-	cmd := exec.Command("pfctl", "-sr")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("unable to run pfctl (may require sudo): %w", err)
-	}
+	// Note: We don't test pfctl execution here because it requires sudo
+	// The actual pfctl commands will be run with sudo when needed
+	logger.Log.Debug("pfctl command found, will require sudo for actual operations")
 
 	return nil
 }

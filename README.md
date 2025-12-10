@@ -14,9 +14,12 @@ Transform how you access Kubernetes services with DNS-style routing and zero-con
 - ⚡ **Auto Port-Forwarding** — Automatic, cached port-forwards to healthy pods
 - 🌐 **Virtual DNS Interface** — Isolated DNS mode with UDP+TCP support to avoid VPN/hosts conflicts
 - 🏠 **Free Local IP** — Smart allocation (127.0.0.2+) to prevent localhost collisions
-- � **Universal Port Handling** — Handle ALL ports on virtual interface with intelligent port matching
-- �📊 **Health Monitoring** — Lightweight monitoring with Prometheus metrics
+- 🔀 **Universal Port Handling** — Handle ALL ports on virtual interface with intelligent port matching (Linux) / multi-port listeners (macOS)
+- 🎯 **Smart Port Resolution** — Automatically resolves service ports based on requested port (e.g., `:8081` maps to correct target port)
+- 📊 **Health Monitoring** — Lightweight monitoring with Prometheus metrics
 - 🔧 **Zero Configuration** — Works out-of-the-box with sensible defaults
+- 🍎 **Native macOS Support** — ARM64 (Apple Silicon M2/M3) and Intel with platform-specific optimizations
+- 🐧 **Full Linux Support** — Complete feature set with iptables-based traffic redirection
 
 ## 🚀 Quick Start
 
@@ -28,28 +31,84 @@ cd kube-tunnel
 go build -o kube-tunnel ./cmd
 ```
 
+### Platform-Specific Setup
+
+#### 🍎 macOS (Apple Silicon M2/M3 & Intel)
+
+kube-tunnel has **native support** for macOS with platform-specific optimizations:
+
+```bash
+# Option 1: Basic mode (no sudo required)
+./kube-tunnel -virtual=false -port=8080
+
+# Option 2: With virtual interfaces (requires sudo)
+sudo ./kube-tunnel -verbose
+
+# Option 3: Custom configuration
+sudo ./kube-tunnel -virtual -virtual-ip=10.8.0.1 -port=8080
+```
+
+**macOS Notes:**
+- ✅ Native ARM64 support (Apple Silicon M2/M3)
+- ⚠️ Virtual interfaces require `sudo` for `ifconfig` operations and DNS resolver configuration
+- 🌐 DNS resolution uses `/etc/resolver/` mechanism (automatically configured)
+- ℹ️ Universal port handling uses `pfctl` instead of `iptables`
+- 💡 For development, use `-virtual=false` to avoid sudo requirement
+
+**DNS Resolution on macOS:**
+When running with `-virtual` mode, kube-tunnel automatically:
+1. Creates a loopback alias for the DNS server IP
+2. Configures `/etc/resolver/svc.cluster.local` to point to the DNS server
+3. Enables system-wide resolution of `*.svc.cluster.local` domains
+4. Cleans up all configurations on shutdown
+
+#### 🐧 Linux
+
+Full support with all features enabled:
+
+```bash
+# Option 1: Basic mode
+./kube-tunnel
+
+# Option 2: With virtual interfaces (requires sudo for iptables)
+sudo ./kube-tunnel -virtual
+
+# Option 3: Custom configuration
+sudo ./kube-tunnel -virtual -virtual-ip=10.8.0.1 -port=80
+```
+
+**Linux Notes:**
+- ✅ All features fully supported
+- ⚠️ Virtual interfaces and universal port handling require `sudo`
+- ✅ Uses `iptables` for traffic redirection
+- ✅ Uses `ip` command for interface management
+
 ### Basic Usage
 
 1. **Start the proxy** (auto-configures DNS):
 
 ```bash
-./kube-tunnel
+# macOS (without sudo)
+./kube-tunnel -virtual=false -port=8080
+
+# Linux (full features)
+sudo ./kube-tunnel
 ```
 
-1. **Start with common options**:
+2. **Start with common options**:
 
 ```bash
 # Enable debug logging
 ./kube-tunnel -verbose
 
-# Use virtual interface mode for enhanced port handling
-./kube-tunnel -virtual
+# Custom port (no virtual interface)
+./kube-tunnel -port=8080 -virtual=false
 
-# Custom port and virtual IP
-./kube-tunnel -port=8080 -virtual -virtual-ip=10.8.0.1
+# Full features with virtual interfaces (requires sudo)
+sudo ./kube-tunnel -virtual -virtual-ip=10.8.0.1
 ```
 
-1. **Access services** using Kubernetes DNS names:
+3. **Access services** using Kubernetes DNS names:
 
 ```bash
 # HTTP requests
@@ -62,13 +121,15 @@ grpcurl api.default.svc.cluster.local:80 list
 curl -k https://secure-service.default.svc.cluster.local/health
 ```
 
-### 🔌 Enhanced Dual Virtual Interface Architecture
+### 🔌 Virtual Interface Architecture
+
+#### 🐧 Linux (Full Support)
 
 With virtual interface enabled, kube-tunnel automatically creates **two dedicated virtual interfaces** for optimal performance and conflict resolution:
 
 ```bash
-# Enable virtual interface mode (creates both interfaces automatically)
-./kube-tunnel -virtual
+# Enable virtual interface mode (requires sudo)
+sudo ./kube-tunnel -virtual
 
 # Both interfaces created:
 # • kube-dns0    (10.8.0.1) - DNS resolution for *.svc.cluster.local
@@ -85,21 +146,53 @@ curl http://metrics.monitoring.svc.cluster.local:9090/metrics
 
 # gRPC services on their native ports
 grpcurl -plaintext grpc-service.default.svc.cluster.local:50051 list
+
+# Access services with multiple ports (e.g., main app + metrics)
+curl http://my-service.default.svc.cluster.local       # Port 80 (default)
+curl http://my-service.default.svc.cluster.local:8081  # Metrics port
 ```
+
+**macOS Supported Ports:**
+On macOS, the following common ports are automatically handled: `80`, `8080`, `8081`, `9090`, `3000`, `5000`, `8000`, `8443`, `9000`, `8888`, `3001`
+
+#### 🍎 macOS (Optimized Support)
+
+On macOS, kube-tunnel uses loopback aliases instead of dedicated interfaces:
+
+```bash
+# Enable virtual interface mode (requires sudo)
+sudo ./kube-tunnel -virtual
+
+# Creates aliases on lo0:
+# • 10.8.0.1 - DNS resolution for *.svc.cluster.local
+# • 10.8.0.2 - Port forwarding (when configured)
+```
+
+**Platform-Specific Behavior:**
+
+| Feature | Linux | macOS |
+|---------|-------|-------|
+| **Virtual Interfaces** | `ip` command (dummy interfaces) | `ifconfig` (lo0 aliases) |
+| **Traffic Redirection** | `iptables` (full support) | Multi-port listeners |
+| **Universal Port Handling** | ✅ Full support (iptables) | ✅ Common ports (8080, 8081, 9090, etc.) |
+| **DNS Resolution** | ✅ Full support | ✅ Full support |
+| **Port Forwarding** | ✅ Full support | ✅ Full support |
+| **Service Port Mapping** | ✅ Full support | ✅ Full support |
 
 **Architecture Benefits:**
 
-- 🎯 **DNS Interface** (`kube-dns0`) — Dedicated for DNS resolution of Kubernetes services
-- 🔌 **Proxy Interface** (`kube-proxy0`) — Dedicated for kubectl port-forward sessions
-- 🚫 **No Port Conflicts** — Universal port handler redirects traffic efficiently  
-- ⚡ **Auto Port Matching** — Tries to match requested ports, falls back gracefully
-- 📝 **Clear Separation** — Each interface has a single, focused responsibility
+- 🎯 **Dedicated IP Addresses** — Separate IPs for DNS and port-forwarding
+- 🔌 **Automatic Port Forwarding** — kubectl port-forward sessions managed automatically
+- 🚫 **Reduced Port Conflicts** — Smart IP allocation and port matching
+- ⚡ **Graceful Degradation** — Works on both platforms with platform-specific optimizations
+- 📝 **Clear Separation** — Logical separation between DNS and proxy traffic
 
 The system automatically:
 
 - 🎯 **Tries to match ports** — Uses the same port for Kubernetes port-forwarding when available
-- 🔄 **Falls back gracefully** — Uses random ports when requested port is unavailable  
+- 🔄 **Falls back gracefully** — Uses random ports when requested port is unavailable
 - 📝 **Logs port mapping** — Shows which ports were matched vs. assigned
+- ⚠️ **Adapts to platform** — Uses appropriate commands and gracefully handles limitations
 
 1. **Monitor status** via built-in dashboard:
 
@@ -429,11 +522,32 @@ graph TD
 1. **DNS Interception** — Captures `*.svc.cluster.local` DNS queries via local DNS server
 2. **Protocol Detection** — Automatically detects HTTP/1.1, HTTP/2, gRPC, and HTTPS protocols
 3. **Service Discovery** — Uses Kubernetes API to find services and select healthy pods
-4. **Smart Port Forwarding** — Creates and caches port-forwards with intelligent port matching
-5. **Virtual Interface** — Optional enhanced mode supporting any port on dedicated interface
-6. **Health Monitoring** — Continuous health checks with Prometheus metrics and dashboard
-7. **Request Proxying** — Forwards requests with protocol-specific optimizations
-8. **Response Delivery** — Returns responses transparently with performance metrics
+4. **Smart Port Resolution** — Resolves the correct target port based on the requested service port (e.g., `:8081` → correct container port)
+5. **Smart Port Forwarding** — Creates and caches port-forwards with intelligent port matching
+6. **Virtual Interface** — Optional enhanced mode supporting any port on dedicated interface
+7. **Multi-Port Listeners (macOS)** — Automatically listens on common ports (8080, 8081, 9090, etc.)
+8. **Health Monitoring** — Continuous health checks with Prometheus metrics and dashboard
+9. **Request Proxying** — Forwards requests with protocol-specific optimizations
+10. **Response Delivery** — Returns responses transparently with performance metrics
+
+### Service Port Resolution
+
+When accessing a service on a specific port, kube-tunnel automatically resolves the correct target port:
+
+```bash
+# Example: Service with multiple ports
+# Service: my-service
+#   - Port 80 → TargetPort 8080 (main app)
+#   - Port 8081 → TargetPort 8081 (metrics)
+
+curl http://my-service.default.svc.cluster.local       # Uses port 80 → forwards to 8080
+curl http://my-service.default.svc.cluster.local:8081  # Uses port 8081 → forwards to 8081
+```
+
+This is particularly useful for:
+- Services exposing multiple ports (app + metrics)
+- Istio-enabled services with sidecar ports
+- Services with named ports (e.g., `http`, `grpc`, `metrics`)
 
 ## 📊 Monitoring & Health
 
@@ -459,22 +573,136 @@ curl http://localhost:80/health/metrics | jq
 
 ## 🛠️ Troubleshooting
 
+### 🍎 macOS-Specific Issues
+
+#### "Permission denied" or "sudo required"
+
+```bash
+# Virtual interfaces require sudo on macOS
+sudo ./kube-tunnel -virtual
+
+# Alternative: Run without virtual interfaces
+./kube-tunnel -virtual=false -port=8080
+```
+
+#### Port Connection Refused
+
+If you get "connection refused" when accessing specific ports:
+
+```bash
+# Check which ports kube-tunnel is listening on
+# Look for "Universal port handler started on X additional ports" in logs
+
+# Supported ports on macOS: 80, 8080, 8081, 9090, 3000, 5000, 8000, 8443, 9000, 8888, 3001
+# For other ports, use the main proxy port:
+curl -H "Host: my-service.default.svc.cluster.local" http://localhost:80/
+```
+
+#### "ifconfig: command not found"
+
+```bash
+# ifconfig should be pre-installed on macOS
+# Verify path
+which ifconfig
+
+# If missing, reinstall Xcode Command Line Tools
+xcode-select --install
+```
+
+#### "Failed to parse host 'localhost'"
+
+This is expected behavior. kube-tunnel only proxies Kubernetes services:
+
+```bash
+# ❌ Wrong - trying to access localhost
+curl http://localhost/
+
+# ✅ Correct - access Kubernetes services
+curl http://my-service.default.svc.cluster.local/
+
+# ✅ Access health endpoints directly
+curl http://localhost:8080/health
+curl http://localhost:8080/metrics
+```
+
+#### Virtual Interface Already Exists
+
+```bash
+# Check existing aliases on lo0
+ifconfig lo0 | grep inet
+
+# Remove stale alias (replace IP with your configured IP)
+sudo ifconfig lo0 -alias 10.8.0.1
+
+# Restart kube-tunnel
+sudo ./kube-tunnel -verbose
+```
+
+### 🐧 Linux-Specific Issues
+
+#### "iptables: command not found"
+
+```bash
+# Install iptables
+# Debian/Ubuntu
+sudo apt-get install iptables
+
+# RHEL/CentOS
+sudo yum install iptables
+
+# Arch
+sudo pacman -S iptables
+```
+
+#### "ip: command not found"
+
+```bash
+# Install iproute2
+# Debian/Ubuntu
+sudo apt-get install iproute2
+
+# RHEL/CentOS
+sudo yum install iproute
+
+# Arch
+sudo pacman -S iproute2
+```
+
 ### 🔍 DNS Resolution Issues
 
 ```bash
-# Check if DNS server is running
+# macOS - Check if DNS resolver configuration exists
+ls -la /etc/resolver/
+cat /etc/resolver/svc.cluster.local
+
+# macOS - Check if loopback alias exists
+ifconfig lo0 | grep "inet "
+
+# macOS - Test DNS resolution through system resolver
+dscacheutil -q host -a name service.namespace.svc.cluster.local
+scutil --dns | grep "svc.cluster.local"
+
+# macOS - Check if DNS server is running
+lsof -nP -iUDP | grep kube-tunnel
+ps aux | grep kube-tunnel
+
+# Linux - Check if DNS server is running
 netstat -tulnp | grep :5353
 
-# Manual DNS testing (find the actual DNS port in logs)
-dig @127.0.0.1 -p 5353 service.namespace.svc.cluster.local
+# Manual DNS testing (find the actual DNS port in kube-tunnel logs)
+dig @127.0.0.1 -p <PORT> service.namespace.svc.cluster.local
 
-# Test virtual interface DNS (if enabled)
-export KTUN_USE_VIRTUAL=true
-LOG_LEVEL=debug ./kube-tunnel
+# Test with curl (should work if DNS is configured correctly)
+curl -v http://service.namespace.svc.cluster.local
 
-# Debug DNS resolution
-export KTUN_DNS_IP=127.0.0.1
-LOG_LEVEL=debug ./kube-tunnel 2>&1 | grep -i dns
+# Test virtual interface DNS (requires sudo on macOS)
+sudo ./kube-tunnel -virtual -verbose
+
+# Debug DNS resolution with full logging
+LOG_LEVEL=debug sudo ./kube-tunnel -virtual 2>&1 | grep -E "DNS|resolver|interface"
+
+# If DNS resolution fails, verify kube-tunnel is running with virtual mode
+# and that /etc/resolver/svc.cluster.local points to the correct IP and port
 ```
 
 ### ❌ Service Not Found
@@ -491,26 +719,50 @@ kubectl auth can-i create pods/portforward
 LOG_LEVEL=debug ./kube-tunnel
 ```
 
-### � Network & Virtual Interface Issues
+### 🌐 Network & Virtual Interface Issues
 
 ```bash
 # Check IP allocation
 LOG_LEVEL=debug ./kube-tunnel 2>&1 | grep "local IP"
 
-# Test IP availability
+# Test IP availability (macOS/Linux)
 for i in {2..10}; do
   ping -c1 -W1 127.0.0.$i 2>/dev/null && \
   echo "127.0.0.$i in use" || echo "127.0.0.$i available"
 done
 
+# macOS - Check lo0 interface
+ifconfig lo0
+
+# Linux - Check lo interface
+ip addr show lo
+
 # Force specific virtual interface IP
 export KTUN_VIRTUAL_IP=127.0.0.50
 export KTUN_USE_VIRTUAL=true
-./kube-tunnel
+sudo ./kube-tunnel
 
 # Configure custom IP ranges
 export KTUN_IP_RANGES="127.0.0.0/24,10.0.0.0/24"
-./kube-tunnel
+sudo ./kube-tunnel
+```
+
+### 🔧 Platform Compatibility
+
+```bash
+# Check your platform
+uname -s  # Darwin (macOS) or Linux
+
+# macOS - Check architecture
+uname -m  # arm64 (Apple Silicon) or x86_64 (Intel)
+
+# Verify kube-tunnel binary
+file ./kube-tunnel
+
+# Expected output:
+# macOS ARM: "Mach-O 64-bit executable arm64"
+# macOS Intel: "Mach-O 64-bit executable x86_64"
+# Linux: "ELF 64-bit LSB executable"
 ```
 
 ## ✨ Architecture Highlights

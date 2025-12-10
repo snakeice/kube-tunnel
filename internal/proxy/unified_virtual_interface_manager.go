@@ -36,29 +36,52 @@ func (uvim *UnifiedVirtualInterfaceManager) IsSupported() bool {
 }
 
 // CheckRequirements verifies that all components can be used on the current platform.
+// This function now only logs warnings instead of failing completely if some components
+// are not available. At least one component must be available for the manager to work.
 func (uvim *UnifiedVirtualInterfaceManager) CheckRequirements() error {
 	var errors []string
+	var availableComponents int
 
 	if uvim.virtualInterface.IsSupported() {
 		if err := uvim.virtualInterface.CheckRequirements(); err != nil {
+			logger.Log.Warnf("Virtual interface support limited: %v", err)
 			errors = append(errors, fmt.Sprintf("virtual interface: %v", err))
+		} else {
+			availableComponents++
+			logger.Log.Debug("Virtual interface component available")
 		}
 	}
 
 	if uvim.trafficRedirect.IsSupported() {
 		if err := uvim.trafficRedirect.CheckRequirements(); err != nil {
+			logger.Log.Warnf("Traffic redirection support limited: %v", err)
 			errors = append(errors, fmt.Sprintf("traffic redirection: %v", err))
+		} else {
+			availableComponents++
+			logger.Log.Debug("Traffic redirection component available")
 		}
 	}
 
 	if uvim.routeManager.IsSupported() {
 		if err := uvim.routeManager.CheckRequirements(); err != nil {
+			logger.Log.Warnf("Route management support limited: %v", err)
 			errors = append(errors, fmt.Sprintf("route management: %v", err))
+		} else {
+			availableComponents++
+			logger.Log.Debug("Route management component available")
 		}
 	}
 
+	// Only fail if no components are available at all
+	if availableComponents == 0 {
+		return fmt.Errorf("no virtual interface components available: %v", errors)
+	}
+
+	// Log warnings but don't fail
 	if len(errors) > 0 {
-		return fmt.Errorf("requirement check failed: %v", errors)
+		logger.Log.Infof("Virtual interface manager running with %d/%d components available",
+			availableComponents, availableComponents+len(errors))
+		logger.Log.Debugf("Component issues (non-fatal): %v", errors)
 	}
 
 	return nil

@@ -78,16 +78,30 @@ health_check() {
     echo -e "${YELLOW}🔍 Testing: ${description}${NC}"
     echo -e "   Endpoint: ${CYAN}${PROXY_URL}${endpoint}${NC}"
 
+    # Measure time manually and capture response
     start_time=$(date +%s%N)
-    response=$(curl -s -w "%{http_code}|%{time_total}" "${PROXY_URL}${endpoint}" 2>/dev/null || echo "000|0.000")
+
+    # Make the request and capture status code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" "${PROXY_URL}${endpoint}" 2>/dev/null || echo "000")
+
     end_time=$(date +%s%N)
 
-    IFS='|' read -r status_code time_total <<< "$response"
+    # Calculate time in seconds (with 6 decimal places)
+    elapsed=$((end_time - start_time))
+    time_seconds=$(awk "BEGIN {printf \"%.6f\", $elapsed/1000000000}")
 
-    if [[ "$status_code" == "200" ]]; then
-        echo -e "   ${GREEN}✅ Status: ${status_code} | Response time: ${time_total}s${NC}"
+    # Capture response body for display
+    response_body=$(curl -s "${PROXY_URL}${endpoint}" 2>/dev/null)
+
+    if [[ "$http_code" == "200" ]]; then
+        echo -e "   ${GREEN}✅ Status: $http_code | Response time: ${time_seconds}s${NC}"
+        # Show response body preview (first 100 chars)
+        if [[ -n "$response_body" ]]; then
+            preview=$(echo "$response_body" | head -c 100)
+            echo -e "   ${CYAN}Response: ${preview}...${NC}"
+        fi
     else
-        echo -e "   ${RED}❌ Status: ${status_code} | Response time: ${time_total}s${NC}"
+        echo -e "   ${RED}❌ Status: $http_code | Response time: ${time_seconds}s${NC}"
     fi
     echo ""
 }
@@ -99,13 +113,23 @@ continuous_monitor() {
 
     while true; do
         timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-        response=$(curl -s -w "%{http_code}|%{time_total}" "${PROXY_URL}/health/status" 2>/dev/null || echo "000|0.000")
-        IFS='|' read -r status_code time_total <<< "$response"
 
-        if [[ "$status_code" == "200" ]]; then
-            echo -e "${timestamp} | ${GREEN}✅ Healthy${NC} | Response: ${time_total}s"
+        # Measure time manually
+        start_time=$(date +%s%N)
+
+        # Make the request and capture status code
+        http_code=$(curl -s -o /dev/null -w "%{http_code}" "${PROXY_URL}/health/status" 2>/dev/null || echo "000")
+
+        end_time=$(date +%s%N)
+
+        # Calculate time in seconds
+        elapsed=$((end_time - start_time))
+        time_seconds=$(awk "BEGIN {printf \"%.6f\", $elapsed/1000000000}")
+
+        if [[ "$http_code" == "200" ]]; then
+            echo -e "${timestamp} | ${GREEN}✅ Healthy${NC} | Response: ${time_seconds}s"
         else
-            echo -e "${timestamp} | ${RED}❌ Unhealthy (${status_code})${NC} | Response: ${time_total}s"
+            echo -e "${timestamp} | ${RED}❌ Unhealthy (${http_code})${NC} | Response: ${time_seconds}s"
         fi
 
         sleep 2
