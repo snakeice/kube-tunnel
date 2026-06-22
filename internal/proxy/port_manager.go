@@ -236,7 +236,11 @@ func (pm *PortManager) StopListeningOnPort(port int) error {
 
 		// Remove route
 		routeDest := fmt.Sprintf("%s/32", portListener.VirtualIP)
-		if err := pm.virtualInterfaceMgr.RemoveRoute(routeDest, "127.0.0.1", fmt.Sprintf("kube-tun-%d", port)); err != nil {
+		if err := pm.virtualInterfaceMgr.RemoveRoute(
+			routeDest,
+			"127.0.0.1",
+			fmt.Sprintf("kube-tun-%d", port),
+		); err != nil {
 			logger.LogError("Failed to remove route", err)
 		}
 
@@ -304,7 +308,12 @@ func (pm *PortManager) setupVirtualInterfaceForPort(port int) (string, string) {
 
 	// Add route for the virtual interface
 	routeDest := fmt.Sprintf("%s/32", virtualIP)
-	if err := pm.virtualInterfaceMgr.AddRoute(routeDest, "127.0.0.1", interfaceName, 100); err != nil {
+	if err := pm.virtualInterfaceMgr.AddRoute(
+		routeDest,
+		"127.0.0.1",
+		interfaceName,
+		100,
+	); err != nil {
 		logger.LogError(
 			fmt.Sprintf("Failed to add route for virtual interface %s", interfaceName),
 			err,
@@ -312,7 +321,12 @@ func (pm *PortManager) setupVirtualInterfaceForPort(port int) (string, string) {
 	}
 
 	// Add traffic redirection rule
-	if err := pm.virtualInterfaceMgr.AddRedirectionRule(port, pm.mainProxyPort, virtualIP, pm.mainProxyIP); err != nil {
+	if err := pm.virtualInterfaceMgr.AddRedirectionRule(
+		port,
+		pm.mainProxyPort,
+		virtualIP,
+		pm.mainProxyIP,
+	); err != nil {
 		logger.LogError(fmt.Sprintf("Failed to add redirection rule for port %d", port), err)
 	}
 

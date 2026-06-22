@@ -167,16 +167,20 @@ func createPortForwarder(
 	}, nil
 }
 
-// runPortForwardWithRetry runs the port forwarder with retry logic.
-func runPortForwardWithRetry(
+// runPortForwardWithRetryGeneric runs a port forwarder with retry logic.
+// entityLabel is the log field key (e.g., "pod" or "service") and value for the entity being forwarded.
+// onReady is called after the port-forward tunnel is established to begin monitoring.
+func runPortForwardWithRetryGeneric(
 	ctx context.Context,
 	setup *PortForwarderSetup,
-	namespace, pod, localIP string,
+	namespace, entity, localIP string,
 	localPort, remotePort int,
+	entityLabel string,
+	establishedMsg string,
+	onReady func(context.Context, *PortForwarderSetup, string, string, string, int, int),
 ) error {
-	// Retry logic for transient errors
-	maxRetries := 15                     // Increased retries for better resilience
-	retryDelay := 200 * time.Millisecond // Much faster initial retry
+	maxRetries := 15
+	retryDelay := 200 * time.Millisecond
 	var lastErr error
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
@@ -184,21 +188,20 @@ func runPortForwardWithRetry(
 		go func() {
 			err := setup.ForwardPorts.ForwardPorts()
 			if err != nil {
-				// Only log significant errors, filter out connection resets
 				if !isConnectionResetError(err) {
 					logger.Log.WithFields(logrus.Fields{
 						"namespace":   namespace,
-						"pod":         pod,
+						entityLabel:   entity,
 						"local_ip":    localIP,
 						"local_port":  localPort,
 						"remote_port": remotePort,
 						"attempt":     attempt,
 						"error":       err.Error(),
-					}).Warn("Port-forward ended with error")
+					}).Warn(entityLabel + " port-forward ended with error")
 				} else {
-					logger.LogDebug("Port-forward connection closed", logrus.Fields{
+					logger.LogDebug(entityLabel+" port-forward connection closed", logrus.Fields{
 						"namespace":   namespace,
-						"pod":         pod,
+						entityLabel:   entity,
 						"local_ip":    localIP,
 						"local_port":  localPort,
 						"remote_port": remotePort,
@@ -214,49 +217,59 @@ func runPortForwardWithRetry(
 		case <-setup.ReadyChan:
 			logger.Log.WithFields(logrus.Fields{
 				"namespace":   namespace,
-				"pod":         pod,
+				entityLabel:   entity,
 				"local_ip":    localIP,
 				"local_port":  localPort,
 				"remote_port": remotePort,
 				"attempt":     attempt,
-			}).Info("🔗 Port-forward tunnel established")
+			}).Info(establishedMsg)
 
-			// Start aggressive monitoring of the port-forward
-			go monitorPortForwardAggressively(
-				ctx,
-				setup,
-				namespace,
-				pod,
-				localIP,
-				localPort,
-				remotePort,
-			)
+			onReady(ctx, setup, namespace, entity, localIP, localPort, remotePort)
 			return nil
 		case err := <-done:
 			lastErr = err
-			// Retry on any error, not just transient ones
 			if err != nil && attempt < maxRetries {
 				logger.Log.WithFields(logrus.Fields{
 					"namespace":   namespace,
-					"pod":         pod,
+					entityLabel:   entity,
 					"local_ip":    localIP,
 					"local_port":  localPort,
 					"remote_port": remotePort,
 					"attempt":     attempt,
 					"error":       err.Error(),
-				}).Warn("Port-forward error detected, retrying immediately...")
+				}).Warn(entityLabel + " port-forward error detected, retrying immediately...")
 
-				// Very short delay for immediate retry
 				time.Sleep(retryDelay)
 				continue
 			}
-			// Max retries reached
-			return fmt.Errorf("port-forward failed after %d attempts: %w", attempt, err)
+			return fmt.Errorf(
+				"%s port-forward failed after %d attempts: %w",
+				entityLabel,
+				attempt,
+				err,
+			)
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
 	return lastErr
+}
+
+// runPortForwardWithRetry runs the port forwarder with retry logic for pods.
+func runPortForwardWithRetry(
+	ctx context.Context,
+	setup *PortForwarderSetup,
+	namespace, pod, localIP string,
+	localPort, remotePort int,
+) error {
+	return runPortForwardWithRetryGeneric(
+		ctx, setup, namespace, pod, localIP, localPort, remotePort,
+		"pod",
+		"🔗 Port-forward tunnel established",
+		func(ctx context.Context, s *PortForwarderSetup, ns, ent, lip string, lp, rp int) {
+			go monitorPortForwardAggressively(ctx, s, ns, ent, lip, lp, rp)
+		},
+	)
 }
 
 // monitorPortForwardAggressively monitors the port-forward and restarts it immediately on failure.
@@ -288,7 +301,15 @@ func monitorPortForwardAggressively(
 	defer cancel()
 
 	// Try to restart the port-forward immediately
-	if err := runPortForwardWithRetry(restartCtx, setup, namespace, pod, localIP, localPort, remotePort); err != nil {
+	if err := runPortForwardWithRetry(
+		restartCtx,
+		setup,
+		namespace,
+		pod,
+		localIP,
+		localPort,
+		remotePort,
+	); err != nil {
 		logger.Log.WithFields(logrus.Fields{
 			"namespace":   namespace,
 			"pod":         pod,
@@ -302,7 +323,15 @@ func monitorPortForwardAggressively(
 		restartCtx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel2()
 
-		if err2 := runPortForwardWithRetry(restartCtx2, setup, namespace, pod, localIP, localPort, remotePort); err2 != nil {
+		if err2 := runPortForwardWithRetry(
+			restartCtx2,
+			setup,
+			namespace,
+			pod,
+			localIP,
+			localPort,
+			remotePort,
+		); err2 != nil {
 			logger.Log.WithFields(logrus.Fields{
 				"namespace":   namespace,
 				"pod":         pod,
@@ -480,7 +509,15 @@ func StartServicePortForwardOnIP(
 		ReadyChan:    readyChan,
 	}
 
-	return runServicePortForwardWithRetry(ctx, setup, namespace, service, localIP, localPort, remotePort)
+	return runServicePortForwardWithRetry(
+		ctx,
+		setup,
+		namespace,
+		service,
+		localIP,
+		localPort,
+		remotePort,
+	)
 }
 
 // runServicePortForwardWithRetry runs the service port forwarder with retry logic.
@@ -490,75 +527,14 @@ func runServicePortForwardWithRetry(
 	namespace, service, localIP string,
 	localPort, remotePort int,
 ) error {
-	maxRetries := 15
-	retryDelay := 200 * time.Millisecond
-	var lastErr error
-
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		done := make(chan error, 1)
-		go func() {
-			err := setup.ForwardPorts.ForwardPorts()
-			if err != nil {
-				if !isConnectionResetError(err) {
-					logger.Log.WithFields(logrus.Fields{
-						"namespace":   namespace,
-						"service":     service,
-						"local_ip":    localIP,
-						"local_port":  localPort,
-						"remote_port": remotePort,
-						"attempt":     attempt,
-						"error":       err.Error(),
-					}).Warn("Service port-forward ended with error")
-				} else {
-					logger.LogDebug("Service port-forward connection closed", logrus.Fields{
-						"namespace":   namespace,
-						"service":     service,
-						"local_ip":    localIP,
-						"local_port":  localPort,
-						"remote_port": remotePort,
-						"attempt":     attempt,
-						"reason":      "connection_reset",
-					})
-				}
-			}
-			done <- err
-		}()
-
-		select {
-		case <-setup.ReadyChan:
-			logger.Log.WithFields(logrus.Fields{
-				"namespace":   namespace,
-				"service":     service,
-				"local_ip":    localIP,
-				"local_port":  localPort,
-				"remote_port": remotePort,
-				"attempt":     attempt,
-			}).Info("🔗 Service port-forward tunnel established")
-
-			go monitorServicePortForward(ctx, setup, namespace, service, localIP, localPort, remotePort)
-			return nil
-		case err := <-done:
-			lastErr = err
-			if err != nil && attempt < maxRetries {
-				logger.Log.WithFields(logrus.Fields{
-					"namespace":   namespace,
-					"service":     service,
-					"local_ip":    localIP,
-					"local_port":  localPort,
-					"remote_port": remotePort,
-					"attempt":     attempt,
-					"error":       err.Error(),
-				}).Warn("Service port-forward error detected, retrying immediately...")
-
-				time.Sleep(retryDelay)
-				continue
-			}
-			return fmt.Errorf("service port-forward failed after %d attempts: %w", attempt, err)
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return lastErr
+	return runPortForwardWithRetryGeneric(
+		ctx, setup, namespace, service, localIP, localPort, remotePort,
+		"service",
+		"🔗 Service port-forward tunnel established",
+		func(ctx context.Context, s *PortForwarderSetup, ns, ent, lip string, lp, rp int) {
+			go monitorServicePortForward(ctx, s, ns, ent, lip, lp, rp)
+		},
+	)
 }
 
 // monitorServicePortForward monitors the service port-forward and restarts it on failure.
@@ -585,7 +561,15 @@ func monitorServicePortForward(
 	restartCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := runServicePortForwardWithRetry(restartCtx, setup, namespace, service, localIP, localPort, remotePort); err != nil {
+	if err := runServicePortForwardWithRetry(
+		restartCtx,
+		setup,
+		namespace,
+		service,
+		localIP,
+		localPort,
+		remotePort,
+	); err != nil {
 		logger.Log.WithFields(logrus.Fields{
 			"namespace":   namespace,
 			"service":     service,

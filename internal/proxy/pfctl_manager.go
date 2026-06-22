@@ -255,9 +255,11 @@ func (pf *PfctlManager) buildRuleString(rule PfctlRule) string {
 func (pf *PfctlManager) applyRules() error {
 	// Create rule file content
 	content := "# kube-tunnel pfctl rules\n"
+	var contentSb258 strings.Builder
 	for _, rule := range pf.rules {
-		content += rule + "\n"
+		_, _ = contentSb258.WriteString(rule + "\n")
 	}
+	content += contentSb258.String()
 
 	// Write rules to temporary file
 	if err := pf.writeRuleFile(content); err != nil {

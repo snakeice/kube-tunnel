@@ -102,7 +102,7 @@ func extractOriginalPort(r *http.Request) int {
 }
 
 // isLocalRequest checks if the request is targeting localhost/127.0.0.1
-// instead of a Kubernetes service (*.svc.cluster.local)
+// instead of a Kubernetes service (*.svc.cluster.local).
 func isLocalRequest(r *http.Request) bool {
 	host := r.Host
 

@@ -71,7 +71,10 @@ func NewCache(m *health.Monitor, cfg *config.Config) Cache {
 		case cfg.Network.UseVirtualInterface && cfg.Network.VirtualInterfaceIP != "":
 			// Fall back to DNS virtual interface IP
 			impl.portForwardIP = cfg.Network.VirtualInterfaceIP
-			logger.Log.Debugf("Using DNS virtual interface IP for port forwards: %s", impl.portForwardIP)
+			logger.Log.Debugf(
+				"Using DNS virtual interface IP for port forwards: %s",
+				impl.portForwardIP,
+			)
 		default:
 			impl.portForwardIP = localhostIP
 			logger.Log.Debug("Using localhost for port forwards: 127.0.0.1")
@@ -110,7 +113,10 @@ func NewCacheWithIP(m *health.Monitor, cfg *config.Config, virtualIP string) Cac
 		case cfg.Network.UseVirtualInterface && cfg.Network.VirtualInterfaceIP != "":
 			// Fall back to DNS virtual interface IP
 			impl.portForwardIP = cfg.Network.VirtualInterfaceIP
-			logger.Log.Debugf("Using DNS virtual interface IP for port forwards: %s", impl.portForwardIP)
+			logger.Log.Debugf(
+				"Using DNS virtual interface IP for port forwards: %s",
+				impl.portForwardIP,
+			)
 		default:
 			impl.portForwardIP = localhostIP
 			logger.Log.Debug("Using localhost for port forwards: 127.0.0.1")
@@ -297,7 +303,12 @@ func (c *cacheImpl) setupPortForwardWithHint(
 	var targetPort int
 	if preferredPort > 0 {
 		// Use the new function that considers the requested port
-		podName, targetPort, err = k8s.GetPodNameForServiceWithPort(clientset, namespace, service, preferredPort)
+		podName, targetPort, err = k8s.GetPodNameForServiceWithPort(
+			clientset,
+			namespace,
+			service,
+			preferredPort,
+		)
 	} else {
 		// Fall back to default behavior
 		podName, targetPort, err = k8s.GetPodNameForService(clientset, namespace, service)

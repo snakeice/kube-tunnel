@@ -63,7 +63,7 @@ func (ipt *LinuxTrafficRedirectionManager) CheckRequirements() error {
 	}
 
 	// Check if iptables can be run (requires sudo)
-	cmd := exec.Command("iptables", "-L", "-n")
+	cmd := exec.Command("sudo", "iptables", "-L", "-n")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("unable to run iptables (may require sudo): %w", err)
 	}
@@ -245,10 +245,20 @@ func (ipt *LinuxTrafficRedirectionManager) Cleanup() error {
 
 	var errors []string
 	for key, rule := range ipt.rules {
-		if err := ipt.removeOutputRule(rule.FromPort, rule.FromIP, rule.ToIP, rule.ToPort); err != nil {
+		if err := ipt.removeOutputRule(
+			rule.FromPort,
+			rule.FromIP,
+			rule.ToIP,
+			rule.ToPort,
+		); err != nil {
 			errors = append(errors, fmt.Sprintf("failed to cleanup OUTPUT rule %s: %v", key, err))
 		}
-		if err := ipt.removePreRoutingRule(rule.FromPort, rule.FromIP, rule.ToIP, rule.ToPort); err != nil {
+		if err := ipt.removePreRoutingRule(
+			rule.FromPort,
+			rule.FromIP,
+			rule.ToIP,
+			rule.ToPort,
+		); err != nil {
 			errors = append(
 				errors,
 				fmt.Sprintf("failed to cleanup PREROUTING rule %s: %v", key, err),

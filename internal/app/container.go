@@ -32,6 +32,8 @@ type Container struct {
 	Proxy       *proxy.Proxy
 	Dashboard   *dashboard.Dashboard
 	PortManager *proxy.EnhancedPortManager
+	TCPProxy    *proxy.TCPProxy
+	UDPProxy    *proxy.UDPProxy
 }
 
 // Build initializes all components with explicit dependency ordering.
@@ -64,6 +66,16 @@ func Build() (*Container, error) {
 	c.setupVirtualInterfacesIfEnabled(cfg)
 
 	c.Proxy = proxy.New(c.Cache, c.Monitor, cfg)
+
+	// Step 4: Initialize TCP and UDP proxies if enabled
+	if cfg.TCPProxy.Enabled {
+		c.TCPProxy = proxy.NewTCPProxy(c.Cache)
+		c.UDPProxy = proxy.NewUDPProxy(c.Cache)
+		logger.Log.Info("TCP/UDP proxy layer initialized")
+		if !cfg.TCPProxy.EnableUDP {
+			logger.Log.Info("UDP support disabled by configuration")
+		}
+	}
 
 	// Initialize enhanced port manager
 	mainProxyIP := c.Cache.GetPortForwardIP()

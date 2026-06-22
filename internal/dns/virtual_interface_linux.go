@@ -198,7 +198,12 @@ func (vi *VirtualInterface) createDummyInterface() error {
 		if strings.Contains(string(out), "RTNETLINK answers: File exists") {
 			logger.Log.Debugf("Interface %s already exists, continuing", vi.name)
 		} else {
-			return fmt.Errorf("failed to create %s interface: %w, output: %s", dummyInterfaceType, err, string(out))
+			return fmt.Errorf(
+				"failed to create %s interface: %w, output: %s",
+				dummyInterfaceType,
+				err,
+				string(out),
+			)
 		}
 	}
 	return nil
@@ -354,11 +359,6 @@ func (vi *VirtualInterface) isInterfaceHealthy() bool {
 
 // configureIP assigns an IP address to the interface.
 func (vi *VirtualInterface) configureIP() error {
-	// Check if IP is already in use on any interface
-	if isIPInUse(vi.ip) {
-		return fmt.Errorf("IP address %s is already in use on another interface", vi.ip)
-	}
-
 	// First, try to remove any existing IP configurations to avoid conflicts
 	name, err := vi.validateAndGetName()
 	if err != nil {
@@ -374,6 +374,11 @@ func (vi *VirtualInterface) configureIP() error {
 		)
 	}
 	logger.Log.Debugf("Flush output: %s", string(flushOut))
+
+	// Check if IP is already in use on any OTHER interface (after flushing this one)
+	if isIPInUse(vi.ip) {
+		return fmt.Errorf("IP address %s is already in use on another interface", vi.ip)
+	}
 
 	// Use appropriate configuration based on IP type
 	var configCmd *exec.Cmd

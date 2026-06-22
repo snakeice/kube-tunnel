@@ -140,29 +140,44 @@ func getUsedIPs() []string {
 		return []string{}
 	}
 
-	var usedIPs []string
+	return parseIPCommandOutput(string(out), cmd.Path)
+}
 
-	// Parse output based on command used
-	if strings.Contains(cmd.Path, "ifconfig") {
-		// macOS ifconfig format: "inet 10.8.0.1 netmask ..."
-		re := regexp.MustCompile(`inet\s+(\d+\.\d+\.\d+\.\d+)`)
-		matches := re.FindAllStringSubmatch(string(out), -1)
-		for _, match := range matches {
-			if len(match) > 1 {
-				usedIPs = append(usedIPs, match[1])
-			}
+func parseIPCommandOutput(out, path string) []string {
+	if strings.Contains(path, "ifconfig") {
+		return parseIfconfigOutput(out)
+	}
+
+	return parseIPAddrOutput(out)
+}
+
+func parseIfconfigOutput(out string) []string {
+	re := regexp.MustCompile(`inet\s+(\d+\.\d+\.\d+\.\d+)`)
+	matches := re.FindAllStringSubmatch(out, -1)
+
+	usedIPs := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 {
+			usedIPs = append(usedIPs, match[1])
 		}
-	} else {
-		// Linux 'ip' command format: "inet 10.8.0.1/24 ..."
-		lines := strings.Split(string(out), "\n")
-		for _, line := range lines {
-			if strings.Contains(line, "inet ") && !strings.Contains(line, "inet6") {
-				parts := strings.Fields(line)
-				if len(parts) >= 2 {
-					ip := strings.Split(parts[1], "/")[0]
-					usedIPs = append(usedIPs, ip)
-				}
-			}
+	}
+
+	return usedIPs
+}
+
+func parseIPAddrOutput(out string) []string {
+	var usedIPs []string
+	lines := strings.Split(out, "\n")
+
+	for _, line := range lines {
+		if !strings.Contains(line, "inet ") || strings.Contains(line, "inet6") {
+			continue
+		}
+
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			ip := strings.Split(parts[1], "/")[0]
+			usedIPs = append(usedIPs, ip)
 		}
 	}
 

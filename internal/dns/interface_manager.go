@@ -46,25 +46,43 @@ func (mgr *InterfaceManager) createPortForwardInterface(cfg *config.Config) *Vir
 		pfConfig.Network.VirtualInterfaceName = "kube-proxy0" // Default name for port-forward interface
 	}
 
-	pfConfig.Network.VirtualInterfaceIP = cfg.Network.PortForwardInterfaceIP
-	if pfConfig.Network.VirtualInterfaceIP == "" {
-		// Find a different IP from the DNS interface
-		dnsIP := cfg.Network.VirtualInterfaceIP
-		if dnsIP == "" {
-			dnsIP = "10.8.0.1" // Default DNS IP
-		}
-
-		// Calculate a different IP for port-forward interface
-		// If DNS uses 10.8.0.1, use 10.8.0.3 (skip .2 to avoid conflicts)
-		// If DNS uses 10.8.0.2, use 10.8.0.4, etc.
-		pfConfig.Network.VirtualInterfaceIP = mgr.findAlternateIP(dnsIP)
-	}
+	pfConfig.Network.VirtualInterfaceIP = mgr.resolvePortForwardIP(cfg)
 
 	logger.Log.Infof("Creating port-forward interface: %s with IP %s",
 		pfConfig.Network.VirtualInterfaceName,
 		pfConfig.Network.VirtualInterfaceIP)
 
 	return NewVirtualInterface(&pfConfig)
+}
+
+// resolvePortForwardIP determines the best IP for the port-forward interface.
+func (mgr *InterfaceManager) resolvePortForwardIP(cfg *config.Config) string {
+	dnsIP := cfg.Network.VirtualInterfaceIP
+	if dnsIP == "" {
+		dnsIP = "10.8.0.1"
+	}
+
+	calculatedIP := mgr.findAlternateIP(dnsIP)
+	if !isIPInUse(calculatedIP) {
+		return calculatedIP
+	}
+
+	logger.Log.Warnf(
+		"Calculated port-forward IP %s is already in use, finding free IP...",
+		calculatedIP,
+	)
+
+	freeIP := findFreeIP()
+	if freeIP != "" {
+		logger.Log.Infof("Using free IP for port-forward: %s", freeIP)
+		return freeIP
+	}
+
+	logger.Log.Warnf(
+		"Could not find free IP, will attempt to use calculated IP: %s",
+		calculatedIP,
+	)
+	return calculatedIP
 }
 
 // findAlternateIP finds an alternate IP address for the port-forward interface.

@@ -15,7 +15,6 @@ import (
 	"github.com/snakeice/kube-tunnel/internal/logger"
 	"github.com/spf13/viper"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 )
 
 func main() {
@@ -30,10 +29,13 @@ func main() {
 			"",
 			"Virtual interface IP address (default: auto-allocate)",
 		)
-		healthCheck = flag.Bool("health", true, "Enable health monitoring")
-		dnsIP       = flag.String("dns-ip", "127.0.0.1", "DNS server bind IP address")
-		maxRetries  = flag.Int("max-retries", 2, "Maximum retry attempts for requests")
-		configFile  = flag.String("config", "", "Path to configuration file (YAML)")
+		healthCheck   = flag.Bool("health", true, "Enable health monitoring")
+		dnsIP         = flag.String("dns-ip", "127.0.0.1", "DNS server bind IP address")
+		maxRetries    = flag.Int("max-retries", 2, "Maximum retry attempts for requests")
+		configFile    = flag.String("config", "", "Path to configuration file (YAML)")
+		tcpEnabled    = flag.Bool("tcp-enabled", true, "Enable TCP/UDP protocol support")
+		tcpBufferSize = flag.Int("tcp-buffer-size", 32*1024, "TCP proxy buffer size in bytes")
+		tcpUDPEnabled = flag.Bool("udp-enabled", true, "Enable UDP protocol support")
 	)
 	flag.Parse()
 
@@ -74,6 +76,15 @@ func main() {
 	}
 	if *maxRetries != 2 {
 		os.Setenv("KTUN_RETRY_MAX", strconv.Itoa(*maxRetries))
+	}
+	if !*tcpEnabled {
+		os.Setenv("KTUN_TCP_PROXY_ENABLED", "false")
+	}
+	if *tcpBufferSize != 32*1024 {
+		os.Setenv("KTUN_TCP_BUFFER_SIZE", strconv.Itoa(*tcpBufferSize))
+	}
+	if !*tcpUDPEnabled {
+		os.Setenv("KTUN_TCP_UDP_ENABLED", "false")
 	}
 	if *help {
 		flag.Usage()
@@ -122,15 +133,19 @@ func createServer(port int, conf *config.Config, mux http.Handler) *http.Server 
 		MaxUploadBufferPerConnection: conf.Performance.MaxUploadBufferPerConnection,
 		MaxUploadBufferPerStream:     conf.Performance.MaxUploadBufferPerStream,
 	}
-	handler := h2c.NewHandler(mux, h2s)
+
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
 
 	addr := ":" + strconv.Itoa(port)
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      handler,
+		Handler:      mux,
 		ReadTimeout:  conf.Performance.ReadTimeout,
 		WriteTimeout: conf.Performance.WriteTimeout,
 		IdleTimeout:  conf.Performance.IdleTimeout,
+		Protocols:    protocols,
 	}
 
 	if err := http2.ConfigureServer(server, h2s); err != nil {
@@ -149,7 +164,15 @@ func startServer(server *http.Server, port int, container *app.Container) {
 	logger.Log.Infof("🌐 Proxy server running at %s", url)
 	logger.Log.Infof("🔗 Port forwards using IP: %s", container.Cache.GetPortForwardIP())
 	logger.Log.Infof("📱 Dashboard: %s/dashboard", url)
-	logger.Log.Infof("🚀 Server listening on %s (HTTP/1.1, h2c, h2 with TLS, gRPC)", server.Addr)
+
+	protocols := "HTTP/1.1, h2c, h2 with TLS, gRPC"
+	if container.Cfg.TCPProxy.Enabled {
+		protocols += ", TCP"
+		if container.Cfg.TCPProxy.EnableUDP {
+			protocols += "/UDP"
+		}
+	}
+	logger.Log.Infof("🚀 Server listening on %s (%s)", server.Addr, protocols)
 	logger.Log.Info("✅ Ready to proxy requests to *.svc.cluster.local services")
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -177,7 +200,7 @@ func printUsageExamples() {
 	examples := `
 Examples:
 
-  # Start proxy server on default port 80
+  # Start proxy server on default port 80 (HTTP, gRPC, TCP/UDP enabled)
   ./kube-tunnel
 
   # Start on custom port with debug logging
@@ -195,15 +218,30 @@ Examples:
   # Custom DNS configuration
   ./kube-tunnel -dns-ip=127.0.0.1 -max-retries=3
 
+  # Disable TCP/UDP and use HTTP only
+  ./kube-tunnel -tcp-enabled=false
+
   # Full configuration example
   ./kube-tunnel -port=8080 -virtual -virtual-ip=192.168.1.100 -verbose
 
 Environment variables (KTUN_* prefix) take precedence over flags.
 See ENV_VARS.md for complete configuration options.
 
+TCP/UDP Configuration:
+  ./kube-tunnel -tcp-enabled=true -tcp-buffer-size=65536 -udp-enabled=true
+
 After starting, you can make requests like:
+  # HTTP
   curl http://my-service.default.svc.cluster.local/health
+
+  # gRPC
   curl --http2-prior-knowledge http://grpc-service.default.svc.cluster.local/api
+
+  # Raw TCP (e.g., database, Redis)
+  nc my-db.default.svc.cluster.local 5432
+
+  # Temporal.io (gRPC or raw TCP)
+  temporal workflow list -a service.namespace.svc.cluster.local:7233
 `
 	logger.Log.Info(examples)
 }

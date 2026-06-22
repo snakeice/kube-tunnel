@@ -25,6 +25,7 @@ type Config struct {
 	Health      HealthConfig
 	Network     NetworkConfig
 	Proxy       ProxyConfig
+	TCPProxy    TCPProxyConfig
 }
 
 type PerformanceConfig struct {
@@ -81,6 +82,15 @@ type ProxyConfig struct {
 	RetryDelay time.Duration
 }
 
+type TCPProxyConfig struct {
+	Enabled        bool
+	BufferSize     int
+	IdleTimeout    time.Duration
+	ConnectTimeout time.Duration
+	MaxConnections int
+	EnableUDP      bool
+}
+
 func GetConfig() *Config {
 	// Check if Viper has been initialized
 	if viper.GetString("network.dnsBindIP") != "" {
@@ -93,24 +103,28 @@ func GetConfig() *Config {
 	health := createDefaultHealthConfig()
 	network := createDefaultNetworkConfig()
 	proxy := createDefaultProxyConfig()
+	tcpProxy := createDefaultTCPProxyConfig()
 
 	// Apply environment overrides
 	perf = applyPerformanceOverrides(perf)
 	health = applyHealthOverrides(health)
 	network = applyNetworkOverrides(network)
 	proxy = applyProxyOverrides(proxy)
+	tcpProxy = applyTCPProxyOverrides(tcpProxy)
 
 	// Validate configurations
 	perf = validatePerformanceConfig(perf)
 	health = validateHealthConfig(health)
 	network = validateNetworkConfig(network)
 	proxy = validateProxyConfig(proxy)
+	tcpProxy = validateTCPProxyConfig(tcpProxy)
 
 	return &Config{
 		Performance: perf,
 		Health:      health,
 		Network:     network,
 		Proxy:       proxy,
+		TCPProxy:    tcpProxy,
 	}
 }
 
@@ -174,6 +188,18 @@ func createDefaultProxyConfig() ProxyConfig {
 	return ProxyConfig{
 		MaxRetries: 2,
 		RetryDelay: 100 * time.Millisecond,
+	}
+}
+
+// createDefaultTCPProxyConfig creates the default TCP proxy configuration.
+func createDefaultTCPProxyConfig() TCPProxyConfig {
+	return TCPProxyConfig{
+		Enabled:        true,
+		BufferSize:     32 * 1024, // 32KB buffer
+		IdleTimeout:    5 * time.Minute,
+		ConnectTimeout: 10 * time.Second,
+		MaxConnections: 1000,
+		EnableUDP:      true,
 	}
 }
 
@@ -265,6 +291,17 @@ func applyProxyOverrides(proxy ProxyConfig) ProxyConfig {
 	return proxy
 }
 
+// applyTCPProxyOverrides applies environment variable overrides to TCP proxy config.
+func applyTCPProxyOverrides(tcpProxy TCPProxyConfig) TCPProxyConfig {
+	tcpProxy.Enabled = getEnvBool("KTUN_TCP_PROXY_ENABLED", tcpProxy.Enabled)
+	tcpProxy.BufferSize = getEnvInt("KTUN_TCP_BUFFER_SIZE", tcpProxy.BufferSize)
+	tcpProxy.IdleTimeout = getEnvDuration("KTUN_TCP_IDLE_TIMEOUT", tcpProxy.IdleTimeout)
+	tcpProxy.ConnectTimeout = getEnvDuration("KTUN_TCP_CONNECT_TIMEOUT", tcpProxy.ConnectTimeout)
+	tcpProxy.MaxConnections = getEnvInt("KTUN_TCP_MAX_CONNS", tcpProxy.MaxConnections)
+	tcpProxy.EnableUDP = getEnvBool("KTUN_TCP_UDP_ENABLED", tcpProxy.EnableUDP)
+	return tcpProxy
+}
+
 // validatePerformanceConfig validates performance configuration values.
 func validatePerformanceConfig(perf PerformanceConfig) PerformanceConfig {
 	if perf.MaxIdleConns < 1 {
@@ -326,7 +363,11 @@ func validatePortForwardConfig(network NetworkConfig) NetworkConfig {
 	if network.PortForwardBindIP == "" {
 		network.PortForwardBindIP = defaultPortForwardIP
 	} else if !isValidIP(network.PortForwardBindIP) {
-		logger.Log.Warn("Invalid port forward bind IP format, using default", "ip", network.PortForwardBindIP)
+		logger.Log.Warn(
+			"Invalid port forward bind IP format, using default",
+			"ip",
+			network.PortForwardBindIP,
+		)
 		network.PortForwardBindIP = defaultPortForwardIP
 	}
 
@@ -357,7 +398,11 @@ func validateVirtualInterfaceConfig(network NetworkConfig) NetworkConfig {
 	if network.UseVirtualInterface && network.VirtualInterfaceIP == "" {
 		network.VirtualInterfaceIP = network.DNSBindIP
 	} else if network.UseVirtualInterface && !isValidIP(network.VirtualInterfaceIP) {
-		logger.Log.Warn("Invalid virtual interface IP format, using DNS bind IP", "ip", network.VirtualInterfaceIP)
+		logger.Log.Warn(
+			"Invalid virtual interface IP format, using DNS bind IP",
+			"ip",
+			network.VirtualInterfaceIP,
+		)
 		network.VirtualInterfaceIP = network.DNSBindIP
 	}
 	return network
@@ -440,6 +485,35 @@ func validateProxyConfig(proxy ProxyConfig) ProxyConfig {
 		proxy.RetryDelay = 2 * time.Second
 	}
 	return proxy
+}
+
+// validateTCPProxyConfig validates TCP proxy configuration values.
+func validateTCPProxyConfig(tcpProxy TCPProxyConfig) TCPProxyConfig {
+	if tcpProxy.BufferSize < 512 {
+		tcpProxy.BufferSize = 512
+	}
+	if tcpProxy.BufferSize > 1*Mb {
+		tcpProxy.BufferSize = 1 * Mb
+	}
+	if tcpProxy.IdleTimeout < time.Second {
+		tcpProxy.IdleTimeout = time.Second
+	}
+	if tcpProxy.IdleTimeout > 30*time.Minute {
+		tcpProxy.IdleTimeout = 30 * time.Minute
+	}
+	if tcpProxy.ConnectTimeout < 500*time.Millisecond {
+		tcpProxy.ConnectTimeout = 500 * time.Millisecond
+	}
+	if tcpProxy.ConnectTimeout > 60*time.Second {
+		tcpProxy.ConnectTimeout = 60 * time.Second
+	}
+	if tcpProxy.MaxConnections < 1 {
+		tcpProxy.MaxConnections = 1
+	}
+	if tcpProxy.MaxConnections > 100000 {
+		tcpProxy.MaxConnections = 100000
+	}
+	return tcpProxy
 }
 
 func getEnvBool(key string, def bool) bool {

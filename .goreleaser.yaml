@@ -20,7 +20,6 @@ builds:
     goos:
       - linux
       - darwin
-      - windows
     goarch:
       - amd64
       - arm64
@@ -28,11 +27,6 @@ builds:
     goarm:
       - "6"
       - "7"
-    ignore:
-      - goos: windows
-        goarch: arm
-      - goos: windows
-        goarch: arm64
     env:
       - CGO_ENABLED=0
     flags:
@@ -142,66 +136,6 @@ release:
     ```
 
     **Full Changelog**: https://github.com/snakeice/kube-tunnel/compare/{{ .PreviousTag }}...{{ .Tag }}
-
-dockers_v2:
-  - image_templates:
-      - "ghcr.io/snakeice/kube-tunnel:{{ .Version }}-amd64"
-      - "ghcr.io/snakeice/kube-tunnel:latest-amd64"
-    dockerfile: Dockerfile
-    use: buildx
-    flags:
-      - "--pull"
-      - "--label=org.opencontainers.image.created={{.Date}}"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.source=https://github.com/snakeice/kube-tunnel"
-      - "--label=org.opencontainers.image.description=High-performance Kubernetes service proxy with intelligent protocol detection"
-      - "--label=org.opencontainers.image.licenses=MIT"
-      - "--platform=linux/amd64"
-
-dockers:
-  - image_templates:
-      - "ghcr.io/snakeice/kube-tunnel:{{ .Version }}-amd64"
-      - "ghcr.io/snakeice/kube-tunnel:latest-amd64"
-    dockerfile: Dockerfile
-    use: buildx
-    build_flag_templates:
-      - "--pull"
-      - "--label=org.opencontainers.image.created={{.Date}}"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.source=https://github.com/snakeice/kube-tunnel"
-      - "--label=org.opencontainers.image.description=High-performance Kubernetes service proxy with intelligent protocol detection"
-      - "--label=org.opencontainers.image.licenses=MIT"
-      - "--platform=linux/amd64"
-  - image_templates:
-      - "ghcr.io/snakeice/kube-tunnel:{{ .Version }}-arm64"
-      - "ghcr.io/snakeice/kube-tunnel:latest-arm64"
-    dockerfile: Dockerfile
-    use: buildx
-    build_flag_templates:
-      - "--pull"
-      - "--label=org.opencontainers.image.created={{.Date}}"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.source=https://github.com/snakeice/kube-tunnel"
-      - "--label=org.opencontainers.image.description=High-performance Kubernetes service proxy with intelligent protocol detection"
-      - "--label=org.opencontainers.image.licenses=MIT"
-      - "--platform=linux/arm64"
-    goarch: arm64
-
-docker_manifests:
-  - name_template: "ghcr.io/snakeice/kube-tunnel:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/snakeice/kube-tunnel:{{ .Version }}-amd64"
-      - "ghcr.io/snakeice/kube-tunnel:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/snakeice/kube-tunnel:latest"
-    image_templates:
-      - "ghcr.io/snakeice/kube-tunnel:latest-amd64"
-      - "ghcr.io/snakeice/kube-tunnel:latest-arm64"
 
 sboms:
   - artifacts: archive

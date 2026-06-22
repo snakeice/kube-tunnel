@@ -138,19 +138,29 @@ func LoadConfigFromViper() *Config {
 	}
 
 	// Parse durations
-	if readTimeout, err := time.ParseDuration(viper.GetString("performance.readTimeout")); err == nil {
+	if readTimeout, err := time.ParseDuration(
+		viper.GetString("performance.readTimeout"),
+	); err == nil {
 		perf.ReadTimeout = readTimeout
 	}
-	if writeTimeout, err := time.ParseDuration(viper.GetString("performance.writeTimeout")); err == nil {
+	if writeTimeout, err := time.ParseDuration(
+		viper.GetString("performance.writeTimeout"),
+	); err == nil {
 		perf.WriteTimeout = writeTimeout
 	}
-	if idleTimeout, err := time.ParseDuration(viper.GetString("performance.idleTimeout")); err == nil {
+	if idleTimeout, err := time.ParseDuration(
+		viper.GetString("performance.idleTimeout"),
+	); err == nil {
 		perf.IdleTimeout = idleTimeout
 	}
-	if responseHeaderTimeout, err := time.ParseDuration(viper.GetString("performance.responseHeaderTimeout")); err == nil {
+	if responseHeaderTimeout, err := time.ParseDuration(
+		viper.GetString("performance.responseHeaderTimeout"),
+	); err == nil {
 		perf.ResponseHeaderTimeout = responseHeaderTimeout
 	}
-	if proxyTimeout, err := time.ParseDuration(viper.GetString("performance.proxyTimeout")); err == nil {
+	if proxyTimeout, err := time.ParseDuration(
+		viper.GetString("performance.proxyTimeout"),
+	); err == nil {
 		perf.ProxyTimeout = proxyTimeout
 	}
 
@@ -168,7 +178,9 @@ func LoadConfigFromViper() *Config {
 	}
 
 	// Parse durations for health
-	if checkInterval, err := time.ParseDuration(viper.GetString("health.checkInterval")); err == nil {
+	if checkInterval, err := time.ParseDuration(
+		viper.GetString("health.checkInterval"),
+	); err == nil {
 		health.CheckInterval = checkInterval
 	}
 	if timeout, err := time.ParseDuration(viper.GetString("health.timeout")); err == nil {

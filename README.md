@@ -2,7 +2,7 @@
 
 > A high-performance Kubernetes service proxy with intelligent protocol detection and automatic service discovery
 
-[![Go Version](https://img.shields.io/badge/go-%3E%3D1.25.0-blue.svg?style=flat-square)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/go-%3E%3D1.26.0-blue.svg?style=flat-square)](https://golang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/snakeice/kube-tunnel/pulls)
 
