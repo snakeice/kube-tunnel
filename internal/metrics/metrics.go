@@ -8,6 +8,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+const (
+	metricLabelService    = "service"
+	metricLabelMethod     = "method"
+	metricLabelStatusCode = "status_code"
+	metricLabelNamespace  = "namespace"
+)
+
 var (
 	// Health check metrics.
 	HealthCheckTotal = promauto.NewCounterVec(
@@ -15,7 +22,7 @@ var (
 			Name: "kube_tunnel_health_checks_total",
 			Help: "Total number of health checks performed",
 		},
-		[]string{"service", "status"},
+		[]string{metricLabelService, "status"},
 	)
 
 	HealthCheckDuration = promauto.NewHistogramVec(
@@ -24,7 +31,7 @@ var (
 			Help:    "Duration of health checks in seconds",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"service"},
+		[]string{metricLabelService},
 	)
 
 	HealthStatus = promauto.NewGaugeVec(
@@ -32,7 +39,7 @@ var (
 			Name: "kube_tunnel_service_health_status",
 			Help: "Current health status of monitored services (1 = healthy, 0 = unhealthy)",
 		},
-		[]string{"service", "port"},
+		[]string{metricLabelService, "port"},
 	)
 
 	HealthFailureCount = promauto.NewGaugeVec(
@@ -40,7 +47,7 @@ var (
 			Name: "kube_tunnel_service_failures",
 			Help: "Number of consecutive failures for each service",
 		},
-		[]string{"service", "port"},
+		[]string{metricLabelService, "port"},
 	)
 
 	// Service registration metrics.
@@ -102,7 +109,12 @@ var (
 			Help:    "Response time of real proxy requests in seconds",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"service", "namespace", "method", "status_code"},
+		[]string{
+			metricLabelService,
+			metricLabelNamespace,
+			metricLabelMethod,
+			metricLabelStatusCode,
+		},
 	)
 
 	RequestTotal = promauto.NewCounterVec(
@@ -110,7 +122,12 @@ var (
 			Name: "kube_tunnel_requests_total",
 			Help: "Total number of proxy requests",
 		},
-		[]string{"service", "namespace", "method", "status_code"},
+		[]string{
+			metricLabelService,
+			metricLabelNamespace,
+			metricLabelMethod,
+			metricLabelStatusCode,
+		},
 	)
 
 	RequestSize = promauto.NewHistogramVec(
@@ -119,7 +136,7 @@ var (
 			Help:    "Size of proxy requests in bytes",
 			Buckets: prometheus.ExponentialBuckets(64, 2, 20), // 64B to ~64MB
 		},
-		[]string{"service", "namespace"},
+		[]string{metricLabelService, metricLabelNamespace},
 	)
 
 	ResponseSize = promauto.NewHistogramVec(
@@ -128,7 +145,7 @@ var (
 			Help:    "Size of proxy responses in bytes",
 			Buckets: prometheus.ExponentialBuckets(64, 2, 20), // 64B to ~64MB
 		},
-		[]string{"service", "namespace", "status_code"},
+		[]string{metricLabelService, metricLabelNamespace, metricLabelStatusCode},
 	)
 )
 

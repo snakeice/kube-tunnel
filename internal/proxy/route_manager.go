@@ -96,9 +96,9 @@ func (rm *RouteManager) AddRoute(destination, gateway, iface string) error {
 	}
 
 	logger.Log.WithFields(logrus.Fields{
-		"destination": destination,
-		"gateway":     gateway,
-		"interface":   iface,
+		fieldKeyDestination: destination,
+		fieldKeyGateway:     gateway,
+		fieldKeyInterface:   iface,
 	}).Info("🛣️  Added route")
 
 	return nil
@@ -125,9 +125,9 @@ func (rm *RouteManager) RemoveRoute(destination, gateway, iface string) error {
 	delete(rm.routes, routeKey)
 
 	logger.Log.WithFields(logrus.Fields{
-		"destination": route.Destination,
-		"gateway":     route.Gateway,
-		"interface":   route.Interface,
+		fieldKeyDestination: route.Destination,
+		fieldKeyGateway:     route.Gateway,
+		fieldKeyInterface:   route.Interface,
 	}).Info("🗑️  Removed route")
 
 	return nil
@@ -241,19 +241,19 @@ func (rm *RouteManager) GetStatistics() map[string]any {
 	defer rm.mu.RUnlock()
 
 	stats := map[string]any{
-		"supported":      rm.IsSupported(),
-		"platform":       runtime.GOOS,
-		"managed_routes": len(rm.routes),
+		fieldKeySupported: rm.IsSupported(),
+		fieldKeyPlatform:  runtime.GOOS,
+		"managed_routes":  len(rm.routes),
 	}
 
 	routes := make([]map[string]any, 0, len(rm.routes))
 	for _, route := range rm.routes {
 		routeInfo := map[string]any{
-			"destination": route.Destination,
-			"gateway":     route.Gateway,
-			"interface":   route.Interface,
-			"metric":      route.Metric,
-			"added":       route.Added,
+			fieldKeyDestination: route.Destination,
+			fieldKeyGateway:     route.Gateway,
+			fieldKeyInterface:   route.Interface,
+			"metric":            route.Metric,
+			"added":             route.Added,
 		}
 
 		routes = append(routes, routeInfo)

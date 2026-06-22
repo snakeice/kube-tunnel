@@ -46,7 +46,7 @@ func (ipt *LinuxTrafficRedirectionManager) IsSupported() bool {
 	}
 
 	// Check if iptables command is available
-	_, err := exec.LookPath("iptables")
+	_, err := exec.LookPath(cmdIptables)
 	return err == nil
 }
 
@@ -57,13 +57,13 @@ func (ipt *LinuxTrafficRedirectionManager) CheckRequirements() error {
 	}
 
 	// Check if iptables command is available
-	_, err := exec.LookPath("iptables")
+	_, err := exec.LookPath(cmdIptables)
 	if err != nil {
 		return fmt.Errorf("iptables command not found: %w", err)
 	}
 
 	// Check if iptables can be run (requires sudo)
-	cmd := exec.Command("sudo", "iptables", "-L", "-n")
+	cmd := exec.Command(cmdSudo, cmdIptables, "-L", "-n")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("unable to run iptables (may require sudo): %w", err)
 	}
@@ -85,8 +85,8 @@ func (ipt *LinuxTrafficRedirectionManager) AddRedirectionRule(
 	// Check if rule already exists
 	if _, exists := ipt.rules[key]; exists {
 		logger.Log.WithFields(logrus.Fields{
-			"from": fmt.Sprintf("%s:%d", fromIP, fromPort),
-			"to":   fmt.Sprintf("%s:%d", toIP, toPort),
+			fieldKeyFrom: fmt.Sprintf("%s:%d", fromIP, fromPort),
+			fieldKeyTo:   fmt.Sprintf("%s:%d", toIP, toPort),
 		}).Warn("Iptables redirection rule already exists")
 		return nil
 	}
@@ -96,32 +96,32 @@ func (ipt *LinuxTrafficRedirectionManager) AddRedirectionRule(
 
 	// Add DNAT rule in OUTPUT chain for locally generated traffic
 	dnatRule := []string{
-		"-t", "nat",
+		"-t", argsFlagNAT,
 		"-A", "OUTPUT",
-		"-p", "tcp",
+		"-p", string(ProtocolTCP),
 		"--dst", fromIP,
-		"--dport", strconv.Itoa(fromPort),
-		"-j", "DNAT",
-		"--to-destination", fmt.Sprintf("%s:%d", toIP, toPort),
+		argsFlagDPort, strconv.Itoa(fromPort),
+		"-j", argsFlagDNAT,
+		argsFlagToDestination, fmt.Sprintf("%s:%d", toIP, toPort),
 	}
 
-	cmd := exec.Command("sudo", append([]string{"iptables"}, dnatRule...)...)
+	cmd := exec.Command(cmdSudo, append([]string{cmdIptables}, dnatRule...)...)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to add iptables DNAT rule: %w", err)
 	}
 
 	// Add DNAT rule in PREROUTING chain for forwarded traffic
 	preroutingRule := []string{
-		"-t", "nat",
+		"-t", argsFlagNAT,
 		"-A", "PREROUTING",
-		"-p", "tcp",
+		"-p", string(ProtocolTCP),
 		"--dst", fromIP,
-		"--dport", strconv.Itoa(fromPort),
-		"-j", "DNAT",
-		"--to-destination", fmt.Sprintf("%s:%d", toIP, toPort),
+		argsFlagDPort, strconv.Itoa(fromPort),
+		"-j", argsFlagDNAT,
+		argsFlagToDestination, fmt.Sprintf("%s:%d", toIP, toPort),
 	}
 
-	cmd = exec.Command("sudo", append([]string{"iptables"}, preroutingRule...)...)
+	cmd = exec.Command(cmdSudo, append([]string{cmdIptables}, preroutingRule...)...)
 	if err := cmd.Run(); err != nil {
 		// Try to clean up the OUTPUT rule we just added
 		if err := ipt.removeOutputRule(fromPort, fromIP, toIP, toPort); err != nil {
@@ -131,7 +131,7 @@ func (ipt *LinuxTrafficRedirectionManager) AddRedirectionRule(
 		return fmt.Errorf("failed to add iptables PREROUTING rule: %w", err)
 	}
 
-	ruleText := fmt.Sprintf("DNAT %s:%d -> %s:%d", fromIP, fromPort, toIP, toPort)
+	ruleText := fmt.Sprintf("%s %s:%d -> %s:%d", argsFlagDNAT, fromIP, fromPort, toIP, toPort)
 
 	// Store the rule information
 	ipt.rules[key] = &IptablesRule{
@@ -144,9 +144,9 @@ func (ipt *LinuxTrafficRedirectionManager) AddRedirectionRule(
 	}
 
 	logger.Log.WithFields(logrus.Fields{
-		"rule": ruleText,
-		"from": fmt.Sprintf("%s:%d", fromIP, fromPort),
-		"to":   fmt.Sprintf("%s:%d", toIP, toPort),
+		fieldKeyRule: ruleText,
+		fieldKeyFrom: fmt.Sprintf("%s:%d", fromIP, fromPort),
+		fieldKeyTo:   fmt.Sprintf("%s:%d", toIP, toPort),
 	}).Info("Added iptables redirection rule")
 
 	return nil
@@ -164,8 +164,8 @@ func (ipt *LinuxTrafficRedirectionManager) RemoveRedirectionRule(
 	rule, exists := ipt.rules[key]
 	if !exists {
 		logger.Log.WithFields(logrus.Fields{
-			"from": fmt.Sprintf("%s:%d", fromIP, fromPort),
-			"to":   fmt.Sprintf("%s:%d", toIP, toPort),
+			fieldKeyFrom: fmt.Sprintf("%s:%d", fromIP, fromPort),
+			fieldKeyTo:   fmt.Sprintf("%s:%d", toIP, toPort),
 		}).Warn("Iptables rule not found for removal")
 		return nil
 	}
@@ -182,9 +182,9 @@ func (ipt *LinuxTrafficRedirectionManager) RemoveRedirectionRule(
 	delete(ipt.rules, key)
 
 	logger.Log.WithFields(logrus.Fields{
-		"rule": rule.RuleText,
-		"from": fmt.Sprintf("%s:%d", fromIP, fromPort),
-		"to":   fmt.Sprintf("%s:%d", toIP, toPort),
+		fieldKeyRule: rule.RuleText,
+		fieldKeyFrom: fmt.Sprintf("%s:%d", fromIP, fromPort),
+		fieldKeyTo:   fmt.Sprintf("%s:%d", toIP, toPort),
 	}).Info("Removed iptables redirection rule")
 
 	return nil
@@ -196,14 +196,14 @@ func (ipt *LinuxTrafficRedirectionManager) removeOutputRule(
 	fromIP, toIP string,
 	toPort int,
 ) error {
-	cmd := exec.Command("sudo", "iptables",
-		"-t", "nat",
+	cmd := exec.Command(cmdSudo, cmdIptables,
+		"-t", argsFlagNAT,
 		"-D", "OUTPUT",
 		"-p", "tcp",
 		"--dst", fromIP,
-		"--dport", strconv.Itoa(fromPort),
-		"-j", "DNAT",
-		"--to-destination", fmt.Sprintf("%s:%d", toIP, toPort),
+		argsFlagDPort, strconv.Itoa(fromPort),
+		"-j", argsFlagDNAT,
+		argsFlagToDestination, fmt.Sprintf("%s:%d", toIP, toPort),
 	)
 	return cmd.Run()
 }
@@ -214,14 +214,14 @@ func (ipt *LinuxTrafficRedirectionManager) removePreRoutingRule(
 	fromIP, toIP string,
 	toPort int,
 ) error {
-	cmd := exec.Command("sudo", "iptables",
-		"-t", "nat",
+	cmd := exec.Command(cmdSudo, cmdIptables,
+		"-t", argsFlagNAT,
 		"-D", "PREROUTING",
 		"-p", "tcp",
 		"--dst", fromIP,
-		"--dport", strconv.Itoa(fromPort),
-		"-j", "DNAT",
-		"--to-destination", fmt.Sprintf("%s:%d", toIP, toPort),
+		argsFlagDPort, strconv.Itoa(fromPort),
+		"-j", argsFlagDNAT,
+		argsFlagToDestination, fmt.Sprintf("%s:%d", toIP, toPort),
 	)
 	return cmd.Run()
 }

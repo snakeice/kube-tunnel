@@ -114,8 +114,8 @@ func setDefaults() {
 	viper.SetDefault("network.dnsBindIP", defaultDNSIP)
 	viper.SetDefault("network.portForwardBindIP", defaultPortForwardIP)
 	viper.SetDefault("network.customIPRanges", []string{
-		"10.8.0.0/24",
-		"10.9.0.0/24",
+		defaultIPRange1,
+		defaultIPRange2,
 	})
 
 	// Proxy defaults

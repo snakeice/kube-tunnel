@@ -59,19 +59,19 @@ func (uph *UniversalPortHandler) Start() error {
 	rules := [][]string{
 		// Redirect all TCP traffic destined for virtual interface to main proxy
 		{
-			"sudo", "iptables", "-t", "nat", "-A", "OUTPUT",
+			cmdSudo, cmdIptables, "-t", argsFlagNAT, "-A", "OUTPUT",
 			"-d", uph.virtualIP,
-			"-p", "tcp",
-			"--dport", "1:65535",
-			"-j", "DNAT",
-			"--to-destination", fmt.Sprintf("%s:%d", uph.mainProxyIP, uph.mainProxyPort),
+			"-p", string(ProtocolTCP),
+			argsFlagDPort, portRangeAll,
+			"-j", argsFlagDNAT,
+			argsFlagToDestination, fmt.Sprintf("%s:%d", uph.mainProxyIP, uph.mainProxyPort),
 		},
 		// Ensure proper masquerading for the redirected traffic
 		{
-			"sudo", "iptables", "-t", "nat", "-A", "POSTROUTING",
+			cmdSudo, cmdIptables, "-t", argsFlagNAT, "-A", "POSTROUTING",
 			"-d", uph.mainProxyIP,
-			"-p", "tcp",
-			"--dport", strconv.Itoa(uph.mainProxyPort),
+			"-p", string(ProtocolTCP),
+			argsFlagDPort, strconv.Itoa(uph.mainProxyPort),
 			"-j", "MASQUERADE",
 		},
 	}

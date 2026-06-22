@@ -17,6 +17,8 @@ import (
 	"github.com/snakeice/kube-tunnel/internal/logger"
 )
 
+const fieldKeyPath = "path"
+
 // PortManager manages multiple port listeners that redirect traffic to the main proxy.
 type PortManager struct {
 	mainProxyPort       int
@@ -134,7 +136,7 @@ func (pm *PortManager) StartListeningOnPort(port int) error {
 				"from_port":  port,
 				"to_port":    pm.mainProxyPort,
 				"host":       originalHost,
-				"path":       req.URL.Path,
+				fieldKeyPath: req.URL.Path,
 				"virtual_ip": virtualIP,
 				"bind_ip":    bindIP,
 			})
@@ -359,8 +361,8 @@ func (pm *PortManager) IsListeningOnPort(port int) bool {
 func (pm *PortManager) GetVirtualInterfaceStatistics() map[string]any {
 	stats := map[string]any{
 		"virtual_interface_enabled": pm.useVirtualIF,
-		"platform":                  runtime.GOOS,
-		"supported":                 false,
+		fieldKeyPlatform:            runtime.GOOS,
+		fieldKeySupported:           false,
 	}
 
 	if pm.virtualInterfaceMgr != nil {

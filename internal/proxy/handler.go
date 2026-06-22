@@ -17,8 +17,11 @@ import (
 )
 
 const (
-	protocolHTTP = "http"
-	protocolGRPC = "grpc"
+	protocolHTTP          = "http"
+	protocolGRPC          = "grpc"
+	fieldKeyMethod        = "method"
+	fieldKeyStatus        = "status"
+	fieldKeyTotalServices = "total_services"
 )
 
 func New(c cache.Cache, hm *health.Monitor, cfg *config.Config) *Proxy {
@@ -104,8 +107,8 @@ func (p *Proxy) tryUseCachedSetup(
 	duration := time.Since(startTime)
 	if duration > 100*time.Millisecond {
 		logger.LogDebug("Fast path slower than expected", logrus.Fields{
-			"service":  service,
-			"duration": duration.String(),
+			fieldKeyService: service,
+			"duration":      duration.String(),
 		})
 	}
 
@@ -217,10 +220,10 @@ func (p *Proxy) HandlePrometheusMetrics(w http.ResponseWriter, r *http.Request) 
 func (p *Proxy) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	protocolInfo := getProtocolInfo(r)
 	resp := map[string]any{
-		"status":   "healthy",
-		"protocol": protocolInfo,
-		"version":  "1.0.0",
-		"features": []string{"http/1.1", "h2c", "h2", "grpc"},
+		fieldKeyStatus:   "healthy",
+		fieldKeyProtocol: protocolInfo,
+		"version":        "1.0.0",
+		"features":       []string{"http/1.1", "h2c", "h2", protocolGRPC},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -255,13 +258,13 @@ func (p *Proxy) healthStatusHandler(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 	resp := map[string]any{
-		"status":          "ok",
-		"protocol":        protocolInfo,
-		"monitor_enabled": p.cfg.Health.Enabled,
-		"check_interval":  p.cfg.Health.CheckInterval.String(),
-		"total_services":  len(all),
-		"services":        list,
-		"timestamp":       time.Now().Format(time.RFC3339),
+		fieldKeyStatus:        "ok",
+		fieldKeyProtocol:      protocolInfo,
+		"monitor_enabled":     p.cfg.Health.Enabled,
+		"check_interval":      p.cfg.Health.CheckInterval.String(),
+		fieldKeyTotalServices: len(all),
+		"services":            list,
+		"timestamp":           time.Now().Format(time.RFC3339),
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -329,12 +332,12 @@ func (p *Proxy) recordMetricsFast(
 
 	// Log minimal metrics
 	logger.LogDebug("Request completed", logrus.Fields{
-		"service":   service,
-		"namespace": namespace,
-		"method":    r.Method,
-		"status":    responseWriter.statusCode,
-		"duration":  duration.String(),
-		"protocol":  protocol,
+		"service":      service,
+		"namespace":    namespace,
+		fieldKeyMethod: r.Method,
+		"status":       responseWriter.statusCode,
+		"duration":     duration.String(),
+		"protocol":     protocol,
 	})
 }
 
@@ -358,19 +361,19 @@ func (p *Proxy) healthMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"status":             "ok",
-		"protocol":           protocolInfo,
-		"monitor_enabled":    p.cfg.Health.Enabled,
-		"total_services":     total,
-		"healthy_services":   healthyCount,
-		"unhealthy_services": total - healthyCount,
-		"health_ratio":       fmt.Sprintf("%.2f", float64(healthyCount)/float64(max(total, 1))),
+		"status":              "ok",
+		"protocol":            protocolInfo,
+		"monitor_enabled":     p.cfg.Health.Enabled,
+		fieldKeyTotalServices: total,
+		"healthy_services":    healthyCount,
+		"unhealthy_services":  total - healthyCount,
+		"health_ratio":        fmt.Sprintf("%.2f", float64(healthyCount)/float64(max(total, 1))),
 		"service_performance": map[string]any{
-			"total_services":  total,
-			"healthy_count":   healthyCount,
-			"unhealthy_count": total - healthyCount,
-			"note":            "Individual service performance details available at /health/status",
-			"status_endpoint": "/health/status",
+			fieldKeyTotalServices: total,
+			"healthy_count":       healthyCount,
+			"unhealthy_count":     total - healthyCount,
+			"note":                "Individual service performance details available at /health/status",
+			"status_endpoint":     "/health/status",
 		},
 		"configuration": map[string]any{
 			"check_interval": p.cfg.Health.CheckInterval.String(),

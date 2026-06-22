@@ -24,6 +24,11 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
+const (
+	fieldKeyAttempt             = "attempt"
+	fieldKeyConnectionLifecycle = "connection_lifecycle"
+)
+
 type retryableTransport struct {
 	base       http.RoundTripper
 	maxRetries int
@@ -92,12 +97,12 @@ func (rt *retryableTransport) createRetryContext(
 
 func (rt *retryableTransport) logAttempt(req *http.Request, attempt int) {
 	logger.LogDebug("Proxy connection attempt", logrus.Fields{
-		"method":               req.Method,
-		"path":                 req.URL.Path,
-		"attempt":              attempt,
-		"remote_addr":          req.RemoteAddr,
-		"request_id":           req.Header.Get("X-Request-Id"),
-		"connection_lifecycle": "open",
+		fieldKeyMethod:              req.Method,
+		fieldKeyPath:                req.URL.Path,
+		fieldKeyAttempt:             attempt,
+		fieldKeyRemoteAddr:          req.RemoteAddr,
+		fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+		fieldKeyConnectionLifecycle: "open",
 	})
 }
 
@@ -110,10 +115,10 @@ func (rt *retryableTransport) checkDeadline(
 	case <-retryCtx.Done():
 		if errors.Is(retryCtx.Err(), context.DeadlineExceeded) {
 			logger.LogDebug("Request deadline exceeded during retry", logrus.Fields{
-				"method":  req.Method,
-				"path":    req.URL.Path,
-				"attempt": attempt,
-				"grpc":    rt.isGRPC,
+				fieldKeyMethod:  req.Method,
+				fieldKeyPath:    req.URL.Path,
+				fieldKeyAttempt: attempt,
+				protocolGRPC:    rt.isGRPC,
 			})
 			return retryCtx.Err()
 		}
@@ -124,12 +129,12 @@ func (rt *retryableTransport) checkDeadline(
 
 func (rt *retryableTransport) logSuccess(req *http.Request, attempt int) {
 	logger.LogDebug("Proxy connection success", logrus.Fields{
-		"method":               req.Method,
-		"path":                 req.URL.Path,
-		"attempt":              attempt,
-		"remote_addr":          req.RemoteAddr,
-		"request_id":           req.Header.Get("X-Request-Id"),
-		"connection_lifecycle": "success",
+		fieldKeyMethod:              req.Method,
+		fieldKeyPath:                req.URL.Path,
+		fieldKeyAttempt:             attempt,
+		fieldKeyRemoteAddr:          req.RemoteAddr,
+		fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+		fieldKeyConnectionLifecycle: "success",
 	})
 }
 
@@ -140,26 +145,26 @@ func (rt *retryableTransport) handleError(
 ) bool {
 	if errors.Is(err, context.Canceled) {
 		logger.LogDebug("Request context canceled - not retrying", logrus.Fields{
-			"method":               req.Method,
-			"path":                 req.URL.Path,
-			"attempt":              attempt,
-			"grpc":                 rt.isGRPC,
-			"remote_addr":          req.RemoteAddr,
-			"request_id":           req.Header.Get("X-Request-Id"),
-			"connection_lifecycle": "cancel",
+			fieldKeyMethod:              req.Method,
+			fieldKeyPath:                req.URL.Path,
+			fieldKeyAttempt:             attempt,
+			protocolGRPC:                rt.isGRPC,
+			fieldKeyRemoteAddr:          req.RemoteAddr,
+			fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+			fieldKeyConnectionLifecycle: "cancel",
 		})
 		return true
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
 		logger.LogDebug("Request context deadline exceeded - not retrying", logrus.Fields{
-			"method":               req.Method,
-			"path":                 req.URL.Path,
-			"attempt":              attempt,
-			"grpc":                 rt.isGRPC,
-			"remote_addr":          req.RemoteAddr,
-			"request_id":           req.Header.Get("X-Request-Id"),
-			"connection_lifecycle": "deadline_exceeded",
+			fieldKeyMethod:              req.Method,
+			fieldKeyPath:                req.URL.Path,
+			fieldKeyAttempt:             attempt,
+			protocolGRPC:                rt.isGRPC,
+			fieldKeyRemoteAddr:          req.RemoteAddr,
+			fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+			fieldKeyConnectionLifecycle: "deadline_exceeded",
 		})
 		return true
 	}
@@ -167,13 +172,13 @@ func (rt *retryableTransport) handleError(
 	if !isRetryableError(err) {
 		logger.LogNonRetryableError(req.Method, req.URL.Path, err, rt.isGRPC)
 		logger.LogDebug("Proxy non-retryable error", logrus.Fields{
-			"method":               req.Method,
-			"path":                 req.URL.Path,
-			"attempt":              attempt,
-			"remote_addr":          req.RemoteAddr,
-			"request_id":           req.Header.Get("X-Request-Id"),
-			"connection_lifecycle": "non-retryable",
-			"error":                err.Error(),
+			fieldKeyMethod:              req.Method,
+			fieldKeyPath:                req.URL.Path,
+			fieldKeyAttempt:             attempt,
+			fieldKeyRemoteAddr:          req.RemoteAddr,
+			fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+			fieldKeyConnectionLifecycle: "non-retryable",
+			fieldKeyError:               err.Error(),
 		})
 		return true
 	}
@@ -183,13 +188,13 @@ func (rt *retryableTransport) handleError(
 
 func (rt *retryableTransport) logRetryError(req *http.Request, attempt int, err error) {
 	logger.LogDebug("Proxy connection retry", logrus.Fields{
-		"method":               req.Method,
-		"path":                 req.URL.Path,
-		"attempt":              attempt,
-		"remote_addr":          req.RemoteAddr,
-		"request_id":           req.Header.Get("X-Request-Id"),
-		"connection_lifecycle": "retry",
-		"error":                err.Error(),
+		fieldKeyMethod:              req.Method,
+		fieldKeyPath:                req.URL.Path,
+		fieldKeyAttempt:             attempt,
+		fieldKeyRemoteAddr:          req.RemoteAddr,
+		fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+		fieldKeyConnectionLifecycle: "retry",
+		fieldKeyError:               err.Error(),
 	})
 }
 
@@ -207,13 +212,13 @@ func (rt *retryableTransport) waitBeforeRetry(
 	select {
 	case <-retryCtx.Done():
 		logger.LogDebug("Retry context deadline exceeded during delay", logrus.Fields{
-			"method":               req.Method,
-			"path":                 req.URL.Path,
-			"attempt":              attempt + 1,
-			"grpc":                 rt.isGRPC,
-			"remote_addr":          req.RemoteAddr,
-			"request_id":           req.Header.Get("X-Request-Id"),
-			"connection_lifecycle": "retry_deadline_exceeded",
+			fieldKeyMethod:              req.Method,
+			fieldKeyPath:                req.URL.Path,
+			fieldKeyAttempt:             attempt + 1,
+			protocolGRPC:                rt.isGRPC,
+			fieldKeyRemoteAddr:          req.RemoteAddr,
+			fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+			fieldKeyConnectionLifecycle: "retry_deadline_exceeded",
 		})
 		return retryCtx.Err()
 	case <-time.After(delay):
@@ -261,9 +266,9 @@ type protocolFallbackTransport struct {
 func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Skip protocol fallback if disabled
 	if pft.config.DisableProtocolFallback {
-		protocol := "h2c"
+		protocol := protocolH2C
 		if !pft.isGRPC {
-			protocol = "http/1.1"
+			protocol = protocolHTTP11
 		}
 		transport := createTransport(pft.config, false, protocol, pft.ip, pft.port)
 		retryTransport := &retryableTransport{
@@ -277,19 +282,19 @@ func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Respon
 
 	// For non-gRPC requests, only use HTTP/1.1 to ensure proper chunked transfer encoding
 	// HTTP/2 doesn't use chunked encoding and can cause issues with large responses
-	protocols := []string{"http/1.1"}
+	protocols := []string{protocolHTTP11}
 	if pft.isGRPC {
 		// For gRPC, only use h2c (HTTP/2 cleartext) - never fallback to HTTP/1.1
-		protocols = []string{"h2c"}
+		protocols = []string{protocolH2C}
 	}
 
 	var lastErr error
 
 	for _, protocol := range protocols {
 		logger.LogDebug("Trying protocol", logrus.Fields{
-			"protocol": protocol,
-			"grpc":     pft.isGRPC,
-			"attempt":  protocol,
+			fieldKeyProtocol: protocol,
+			protocolGRPC:     pft.isGRPC,
+			fieldKeyAttempt:  protocol,
 		})
 
 		transport := createTransport(pft.config, false, protocol, pft.ip, pft.port)
@@ -303,8 +308,8 @@ func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Respon
 		resp, err := retryTransport.RoundTrip(req)
 		if err == nil {
 			logger.LogDebug("Protocol successful", logrus.Fields{
-				"protocol": protocol,
-				"grpc":     pft.isGRPC,
+				fieldKeyProtocol: protocol,
+				protocolGRPC:     pft.isGRPC,
 			})
 			return resp, nil
 		}
@@ -313,8 +318,8 @@ func (pft *protocolFallbackTransport) RoundTrip(req *http.Request) (*http.Respon
 		if strings.Contains(err.Error(), "malformed HTTP response") ||
 			strings.Contains(err.Error(), "HTTP/1.x transport connection broken") {
 			logger.LogDebug("Protocol mismatch, trying next", logrus.Fields{
-				"protocol": protocol,
-				"error":    err.Error(),
+				fieldKeyProtocol: protocol,
+				fieldKeyError:    err.Error(),
 			})
 			lastErr = err
 			continue
@@ -407,6 +412,7 @@ func (crp *CustomReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Minimal request creation
+
 	backendReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), r.Body)
 	if err != nil {
 		crp.handleError(w, r, fmt.Errorf("failed to create backend request: %w", err))
@@ -538,18 +544,18 @@ func (crp *CustomReverseProxy) handleError(w http.ResponseWriter, r *http.Reques
 	// Handle context errors
 	if errors.Is(err, context.Canceled) {
 		logger.LogDebug("Request canceled", logrus.Fields{
-			"method": r.Method,
-			"path":   r.URL.Path,
-			"grpc":   crp.isGRPC,
+			fieldKeyMethod: r.Method,
+			fieldKeyPath:   r.URL.Path,
+			protocolGRPC:   crp.isGRPC,
 		})
 		return
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
 		logger.LogDebug("Request timeout", logrus.Fields{
-			"method": r.Method,
-			"path":   r.URL.Path,
-			"grpc":   crp.isGRPC,
+			fieldKeyMethod: r.Method,
+			fieldKeyPath:   r.URL.Path,
+			protocolGRPC:   crp.isGRPC,
 		})
 		handleTimeoutResponse(w, crp.isGRPC)
 		return
@@ -579,6 +585,7 @@ func createReverseProxy(
 			} else {
 				targetAddr = fmt.Sprintf("%s:%d", localIP, localPort)
 			}
+
 			return net.DialTimeout(network, targetAddr, 1*time.Second)
 		})
 	} else {

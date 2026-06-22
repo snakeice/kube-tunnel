@@ -15,6 +15,11 @@ import (
 	"github.com/snakeice/kube-tunnel/internal/logger"
 )
 
+const (
+	protocolH2C    = "h2c"
+	protocolHTTP11 = "http/1.1"
+)
+
 func createTransport(
 	cfg config.PerformanceConfig,
 	isHTTPS bool,
@@ -30,18 +35,18 @@ func createTransport(
 			targetAddr = fmt.Sprintf("%s:%d", targetIP, targetPort)
 		}
 		logger.LogDebug("Connecting to target", logrus.Fields{
-			"original_addr": addr,
-			"target_addr":   targetAddr,
-			"protocol":      protocol,
+			"original_addr":    addr,
+			fieldKeyTargetAddr: targetAddr,
+			fieldKeyProtocol:   protocol,
 		})
 
 		connTimeout := min(cfg.ResponseHeaderTimeout, 10*time.Second)
 		conn, err := net.DialTimeout(network, targetAddr, connTimeout)
 		if err != nil {
 			logger.LogDebug("Connection failed", logrus.Fields{
-				"target_addr": targetAddr,
-				"protocol":    protocol,
-				"error":       err.Error(),
+				"target_addr":    targetAddr,
+				fieldKeyProtocol: protocol,
+				fieldKeyError:    err.Error(),
 			})
 			return nil, fmt.Errorf("failed to connect to %s: %w", targetAddr, err)
 		}
@@ -49,27 +54,27 @@ func createTransport(
 		if tcpConn, ok := conn.(*net.TCPConn); ok {
 			if err := tcpConn.SetKeepAlive(true); err != nil {
 				logger.LogDebug("Failed to set keep-alive", logrus.Fields{
-					"error": err.Error(),
+					fieldKeyError: err.Error(),
 				})
 			}
 			if err := tcpConn.SetKeepAlivePeriod(30 * time.Second); err != nil {
 				logger.LogDebug("Failed to set keep-alive period", logrus.Fields{
-					"error": err.Error(),
+					fieldKeyError: err.Error(),
 				})
 			}
 		}
 
 		logger.LogDebug("Connection established", logrus.Fields{
-			"target_addr": targetAddr,
-			"protocol":    protocol,
-			"local_addr":  conn.LocalAddr().String(),
+			"target_addr":    targetAddr,
+			fieldKeyProtocol: protocol,
+			"local_addr":     conn.LocalAddr().String(),
 		})
 
 		return conn, nil
 	}
 
 	// Force h2c (HTTP/2 over cleartext) for gRPC
-	if protocol == "h2c" {
+	if protocol == protocolH2C {
 		return createH2CTransport(dialer)
 	}
 
@@ -159,6 +164,7 @@ func createSimpleTransport(targetIP string, targetPort int) http.RoundTripper {
 		} else {
 			targetAddr = fmt.Sprintf("%s:%d", targetIP, targetPort)
 		}
+
 		return net.DialTimeout(network, targetAddr, 1*time.Second)
 	}
 
@@ -183,7 +189,7 @@ func loadTLSConfig() *tls.Config {
 			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
 		},
-		NextProtos: []string{"h2", "http/1.1"},
+		NextProtos: []string{"h2", protocolHTTP11},
 		CurvePreferences: []tls.CurveID{
 			tls.CurveP256,
 			tls.X25519,

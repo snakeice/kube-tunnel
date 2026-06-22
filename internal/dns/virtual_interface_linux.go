@@ -15,6 +15,8 @@ import (
 	"github.com/snakeice/kube-tunnel/internal/logger"
 )
 
+const cmdSudo = "sudo"
+
 // VirtualInterface manages a dummy network interface for cluster DNS.
 type VirtualInterface struct {
 	name       string
@@ -189,7 +191,7 @@ func (vi *VirtualInterface) createDummyInterface() error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("sudo", "ip", "link", "add", name, "type", "dummy")
+	cmd := exec.Command(cmdSudo, "ip", "link", "add", name, "type", "dummy")
 	logger.Log.Infof("Creating %s interface: %s", dummyInterfaceType, strings.Join(cmd.Args, " "))
 
 	out, err := cmd.CombinedOutput()
@@ -248,9 +250,9 @@ func (vi *VirtualInterface) SetupDNS(domain string, port int) error {
 	}
 
 	cmds := [][]string{
-		{"sudo", "-v"},
-		{"sudo", "resolvectl", "dns", vi.name, fmt.Sprintf("%s:%d", vi.ip, port)},
-		{"sudo", "resolvectl", "domain", vi.name, "~" + domain},
+		{cmdSudo, "-v"},
+		{cmdSudo, "resolvectl", "dns", vi.name, fmt.Sprintf("%s:%d", vi.ip, port)},
+		{cmdSudo, "resolvectl", "domain", vi.name, "~" + domain},
 	}
 
 	for _, cmd := range cmds {
@@ -364,7 +366,7 @@ func (vi *VirtualInterface) configureIP() error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("sudo", "ip", "addr", "flush", "dev", name)
+	cmd := exec.Command(cmdSudo, "ip", "addr", "flush", "dev", name)
 	logger.Log.Debugf("Flushing existing IPs: %s", strings.Join(cmd.Args, " "))
 	flushOut, flushErr := cmd.CombinedOutput() // Ignore errors as the interface might be new
 	if flushErr != nil {
@@ -384,10 +386,10 @@ func (vi *VirtualInterface) configureIP() error {
 	var configCmd *exec.Cmd
 	if strings.HasPrefix(vi.ip, "127.") {
 		// For loopback IPs, use single IP without subnet
-		configCmd = exec.Command("sudo", "ip", "addr", "add", vi.ip+"/32", "dev", name)
+		configCmd = exec.Command(cmdSudo, "ip", "addr", "add", vi.ip+"/32", "dev", name)
 	} else {
 		// For other IPs, use the specific IP with /24 subnet
-		configCmd = exec.Command("sudo", "ip", "addr", "add", vi.ip+"/24", "dev", name)
+		configCmd = exec.Command(cmdSudo, "ip", "addr", "add", vi.ip+"/24", "dev", name)
 	}
 
 	logger.Log.Infof("Configuring IP: %s", strings.Join(configCmd.Args, " "))
@@ -421,7 +423,7 @@ func (vi *VirtualInterface) bringUp() error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("sudo", "ip", "link", "set", name, "up")
+	cmd := exec.Command(cmdSudo, "ip", "link", "set", name, "up")
 	logger.Log.Infof("Bringing interface up: %s", strings.Join(cmd.Args, " "))
 
 	out, err := cmd.CombinedOutput()
@@ -550,7 +552,7 @@ func (vi *VirtualInterface) revertDNS() error {
 		return fmt.Errorf("invalid interface name: %s", vi.name)
 	}
 
-	cmd := exec.Command("sudo", "resolvectl", "revert", vi.name)
+	cmd := exec.Command(cmdSudo, "resolvectl", "revert", vi.name)
 	logger.Log.Infof("Reverting DNS configuration: %s", strings.Join(cmd.Args, " "))
 
 	out, err := cmd.CombinedOutput()
@@ -575,7 +577,7 @@ func (vi *VirtualInterface) cleanup() error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("sudo", "ip", "link", "delete", name)
+	cmd := exec.Command(cmdSudo, "ip", "link", "delete", name)
 	logger.Log.Infof("Removing virtual interface: %s", strings.Join(cmd.Args, " "))
 
 	out, err := cmd.CombinedOutput()

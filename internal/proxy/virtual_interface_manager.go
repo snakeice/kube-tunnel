@@ -75,9 +75,9 @@ func (vim *VirtualInterfaceManager) CreateVirtualInterface(port int) (*VirtualIn
 	vim.interfaces[ifaceName] = virtualIface
 
 	logger.Log.WithFields(logrus.Fields{
-		"interface": ifaceName,
-		"ip":        ip,
-		"port":      port,
+		fieldKeyInterface: ifaceName,
+		"ip":              ip,
+		"port":            port,
 	}).Info("🖥️  Created virtual interface on macOS")
 
 	return virtualIface, nil
@@ -101,8 +101,8 @@ func (vim *VirtualInterfaceManager) DestroyVirtualInterface(ifaceName string) er
 	delete(vim.interfaces, ifaceName)
 
 	logger.Log.WithFields(logrus.Fields{
-		"interface": ifaceName,
-		"ip":        virtualIface.IP,
+		fieldKeyInterface: ifaceName,
+		"ip":              virtualIface.IP,
 	}).Info("🗑️  Destroyed virtual interface")
 
 	return nil
@@ -303,8 +303,8 @@ func (vim *VirtualInterfaceManager) GetStatistics() map[string]any {
 
 	stats := map[string]any{
 		"total_interfaces": len(vim.interfaces),
-		"platform":         runtime.GOOS,
-		"supported":        vim.IsSupported(),
+		fieldKeyPlatform:   runtime.GOOS,
+		fieldKeySupported:  vim.IsSupported(),
 		"next_ip":          fmt.Sprintf("127.0.0.%d", vim.nextIP),
 	}
 

@@ -19,6 +19,22 @@ import (
 	"github.com/snakeice/kube-tunnel/internal/logger"
 )
 
+const (
+	logKeyService               = "service"
+	logKeyNamespace             = "namespace"
+	logKeyPod                   = "pod"
+	logKeyMessage               = "message"
+	logKeyCategory              = "category"
+	logKeyLocalIP               = "local_ip"
+	logKeyLocalPort             = "local_port"
+	logKeyRemotePort            = "remote_port"
+	logKeyAttempt               = "attempt"
+	logKeyError                 = "error"
+	logValueConnectionLifecycle = "connection_lifecycle"
+	logValuePortForwardError    = "port_forward_error"
+	logValueConnectionReset     = "connection_reset"
+)
+
 // filteredErrorWriter filters out noisy connection reset errors from port-forward output.
 type filteredErrorWriter struct {
 	namespace string
@@ -38,10 +54,10 @@ func (w *filteredErrorWriter) Write(p []byte) (int, error) {
 		strings.Contains(msg, "read: connection reset by peer") {
 		// Log these as debug level instead of error
 		logger.LogDebug("Port-forward connection closed by client", logrus.Fields{
-			"namespace": w.namespace,
-			"pod":       w.pod,
-			"message":   strings.TrimSpace(msg),
-			"category":  "connection_lifecycle",
+			logKeyNamespace: w.namespace,
+			logKeyPod:       w.pod,
+			logKeyMessage:   strings.TrimSpace(msg),
+			logKeyCategory:  logValueConnectionLifecycle,
 		})
 		return len(p), nil
 	}
@@ -55,29 +71,29 @@ func (w *filteredErrorWriter) Write(p []byte) (int, error) {
 			strings.Contains(lowerMsg, "broken pipe") {
 			// Still a connection reset, just log as debug
 			logger.LogDebug("Port-forward connection closed", logrus.Fields{
-				"namespace": w.namespace,
-				"pod":       w.pod,
-				"message":   strings.TrimSpace(msg),
-				"category":  "connection_lifecycle",
+				logKeyNamespace: w.namespace,
+				logKeyPod:       w.pod,
+				logKeyMessage:   strings.TrimSpace(msg),
+				logKeyCategory:  logValueConnectionLifecycle,
 			})
 			return len(p), nil
 		}
 
 		// It's a real error, log as warning
 		logger.Log.WithFields(logrus.Fields{
-			"namespace": w.namespace,
-			"pod":       w.pod,
-			"message":   strings.TrimSpace(msg),
-			"category":  "port_forward_error",
+			logKeyNamespace: w.namespace,
+			logKeyPod:       w.pod,
+			logKeyMessage:   strings.TrimSpace(msg),
+			logKeyCategory:  logValuePortForwardError,
 		}).Warn("Port-forward stream error")
 		return len(p), nil
 	}
 
 	// For all other messages, pass through to stdout with context
 	logger.LogDebug("Port-forward output", logrus.Fields{
-		"namespace": w.namespace,
-		"pod":       w.pod,
-		"message":   strings.TrimSpace(msg),
+		logKeyNamespace: w.namespace,
+		logKeyPod:       w.pod,
+		logKeyMessage:   strings.TrimSpace(msg),
 	})
 
 	return len(p), nil
@@ -148,7 +164,7 @@ func createPortForwarder(
 		logger.LogDebug(
 			"NewOnAddresses not available, using standard port forwarding",
 			logrus.Fields{
-				"local_ip": localIP,
+				logKeyLocalIP: localIP,
 			},
 		)
 
@@ -190,23 +206,23 @@ func runPortForwardWithRetryGeneric(
 			if err != nil {
 				if !isConnectionResetError(err) {
 					logger.Log.WithFields(logrus.Fields{
-						"namespace":   namespace,
-						entityLabel:   entity,
-						"local_ip":    localIP,
-						"local_port":  localPort,
-						"remote_port": remotePort,
-						"attempt":     attempt,
-						"error":       err.Error(),
+						logKeyNamespace:  namespace,
+						entityLabel:      entity,
+						logKeyLocalIP:    localIP,
+						logKeyLocalPort:  localPort,
+						logKeyRemotePort: remotePort,
+						logKeyAttempt:    attempt,
+						logKeyError:      err.Error(),
 					}).Warn(entityLabel + " port-forward ended with error")
 				} else {
 					logger.LogDebug(entityLabel+" port-forward connection closed", logrus.Fields{
-						"namespace":   namespace,
-						entityLabel:   entity,
-						"local_ip":    localIP,
-						"local_port":  localPort,
-						"remote_port": remotePort,
-						"attempt":     attempt,
-						"reason":      "connection_reset",
+						logKeyNamespace:  namespace,
+						entityLabel:      entity,
+						logKeyLocalIP:    localIP,
+						logKeyLocalPort:  localPort,
+						logKeyRemotePort: remotePort,
+						logKeyAttempt:    attempt,
+						"reason":         logValueConnectionReset,
 					})
 				}
 			}
@@ -216,12 +232,12 @@ func runPortForwardWithRetryGeneric(
 		select {
 		case <-setup.ReadyChan:
 			logger.Log.WithFields(logrus.Fields{
-				"namespace":   namespace,
-				entityLabel:   entity,
-				"local_ip":    localIP,
-				"local_port":  localPort,
-				"remote_port": remotePort,
-				"attempt":     attempt,
+				logKeyNamespace:  namespace,
+				entityLabel:      entity,
+				logKeyLocalIP:    localIP,
+				logKeyLocalPort:  localPort,
+				logKeyRemotePort: remotePort,
+				logKeyAttempt:    attempt,
 			}).Info(establishedMsg)
 
 			onReady(ctx, setup, namespace, entity, localIP, localPort, remotePort)
@@ -230,13 +246,13 @@ func runPortForwardWithRetryGeneric(
 			lastErr = err
 			if err != nil && attempt < maxRetries {
 				logger.Log.WithFields(logrus.Fields{
-					"namespace":   namespace,
-					entityLabel:   entity,
-					"local_ip":    localIP,
-					"local_port":  localPort,
-					"remote_port": remotePort,
-					"attempt":     attempt,
-					"error":       err.Error(),
+					logKeyNamespace:  namespace,
+					entityLabel:      entity,
+					logKeyLocalIP:    localIP,
+					logKeyLocalPort:  localPort,
+					logKeyRemotePort: remotePort,
+					logKeyAttempt:    attempt,
+					logKeyError:      err.Error(),
 				}).Warn(entityLabel + " port-forward error detected, retrying immediately...")
 
 				time.Sleep(retryDelay)
@@ -289,14 +305,15 @@ func monitorPortForwardAggressively(
 
 	// Immediately restart the port-forward
 	logger.Log.WithFields(logrus.Fields{
-		"namespace":   namespace,
-		"pod":         pod,
-		"local_ip":    localIP,
-		"local_port":  localPort,
-		"remote_port": remotePort,
+		logKeyNamespace:  namespace,
+		logKeyPod:        pod,
+		logKeyLocalIP:    localIP,
+		logKeyLocalPort:  localPort,
+		logKeyRemotePort: remotePort,
 	}).Warn("🚨 Port-forward tunnel failed, restarting immediately...")
 
 	// Create a new context for the restart with very short timeout
+
 	restartCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -311,15 +328,16 @@ func monitorPortForwardAggressively(
 		remotePort,
 	); err != nil {
 		logger.Log.WithFields(logrus.Fields{
-			"namespace":   namespace,
-			"pod":         pod,
-			"local_ip":    localIP,
-			"local_port":  localPort,
-			"remote_port": remotePort,
-			"error":       err.Error(),
+			logKeyNamespace:  namespace,
+			logKeyPod:        pod,
+			logKeyLocalIP:    localIP,
+			logKeyLocalPort:  localPort,
+			logKeyRemotePort: remotePort,
+			logKeyError:      err.Error(),
 		}).Error("Failed to restart port-forward immediately")
 
 		// Try one more time with a longer timeout
+
 		restartCtx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel2()
 
@@ -333,12 +351,12 @@ func monitorPortForwardAggressively(
 			remotePort,
 		); err2 != nil {
 			logger.Log.WithFields(logrus.Fields{
-				"namespace":   namespace,
-				"pod":         pod,
-				"local_ip":    localIP,
-				"local_port":  localPort,
-				"remote_port": remotePort,
-				"error":       err2.Error(),
+				logKeyNamespace:  namespace,
+				logKeyPod:        pod,
+				logKeyLocalIP:    localIP,
+				logKeyLocalPort:  localPort,
+				logKeyRemotePort: remotePort,
+				logKeyError:      err2.Error(),
 			}).Error("Failed to restart port-forward after multiple attempts")
 		}
 	}
@@ -492,7 +510,7 @@ func StartServicePortForwardOnIP(
 		logger.LogDebug(
 			"NewOnAddresses not available, using standard port forwarding",
 			logrus.Fields{
-				"local_ip": localIP,
+				logKeyLocalIP: localIP,
 			},
 		)
 
@@ -551,11 +569,11 @@ func monitorServicePortForward(
 	}
 
 	logger.Log.WithFields(logrus.Fields{
-		"namespace":   namespace,
-		"service":     service,
-		"local_ip":    localIP,
-		"local_port":  localPort,
-		"remote_port": remotePort,
+		logKeyNamespace:  namespace,
+		logKeyService:    service,
+		logKeyLocalIP:    localIP,
+		logKeyLocalPort:  localPort,
+		logKeyRemotePort: remotePort,
 	}).Warn("🚨 Service port-forward tunnel failed, restarting immediately...")
 
 	restartCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -571,12 +589,12 @@ func monitorServicePortForward(
 		remotePort,
 	); err != nil {
 		logger.Log.WithFields(logrus.Fields{
-			"namespace":   namespace,
-			"service":     service,
-			"local_ip":    localIP,
-			"local_port":  localPort,
-			"remote_port": remotePort,
-			"error":       err.Error(),
+			logKeyNamespace:  namespace,
+			logKeyService:    service,
+			logKeyLocalIP:    localIP,
+			logKeyLocalPort:  localPort,
+			logKeyRemotePort: remotePort,
+			logKeyError:      err.Error(),
 		}).Error("Failed to restart service port-forward immediately")
 	}
 }

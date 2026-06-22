@@ -22,6 +22,21 @@ const (
 	localhostIP = "127.0.0.1"
 )
 
+const (
+	logKeyService    = "service"
+	logKeyNamespace  = "namespace"
+	logKeyLocalIP    = "local_ip"
+	logKeyLocalPort  = "local_port"
+	logKeyPort       = "port"
+	logKeyIP         = "ip"
+	logKeyRetries    = "retries"
+	logKeyDurationMS = "duration_ms"
+	logKeySession    = "session"
+	logKeySetupMS    = "setup_ms"
+	logKeyPod        = "pod"
+	logKeyRemotePort = "remote_port"
+)
+
 // Cache is the interface for the port-forward cache.
 type Cache interface {
 	EnsurePortForward(service, namespace string) (string, int, error)
@@ -183,15 +198,18 @@ func (c *cacheImpl) EnsurePortForwardWithHint(
 	go c.autoExpire(key)
 
 	logger.LogDebug("Port-forward setup completed", logrus.Fields{
-		"service": service, "namespace": namespace, "local_ip": localIP, "local_port": localPort,
+		logKeyService:    service,
+		logKeyNamespace:  namespace,
+		logKeyLocalIP:    localIP,
+		logKeyLocalPort:  localPort,
 		"total_setup_ms": time.Since(startTime).Milliseconds(),
 	})
 
 	logger.Log.WithFields(logrus.Fields{
-		"service":    service,
-		"namespace":  namespace,
-		"local_ip":   localIP,
-		"local_port": localPort,
+		logKeyService:   service,
+		logKeyNamespace: namespace,
+		logKeyLocalIP:   localIP,
+		logKeyLocalPort: localPort,
 	}).Info("📡 Port-forward session active")
 
 	return localIP, localPort, nil
@@ -223,10 +241,10 @@ func (c *cacheImpl) autoExpire(key string) {
 func (c *cacheImpl) tryReusePortForward(key, service, namespace string) (string, int, bool) {
 	if pf, ok := c.sessions[key]; ok {
 		logger.Log.WithFields(logrus.Fields{
-			"service":    service,
-			"namespace":  namespace,
-			"local_ip":   pf.LocalIP,
-			"local_port": pf.LocalPort,
+			logKeyService:   service,
+			logKeyNamespace: namespace,
+			logKeyLocalIP:   pf.LocalIP,
+			logKeyLocalPort: pf.LocalPort,
 		}).Info("♻️  Reusing existing port-forward")
 		pf.LastUsed = time.Now()
 		if c.monitor == nil || c.monitor.IsHealthy(key).IsHealthy {
@@ -236,10 +254,10 @@ func (c *cacheImpl) tryReusePortForward(key, service, namespace string) (string,
 			return pf.LocalIP, pf.LocalPort, true
 		}
 		logger.Log.WithFields(logrus.Fields{
-			"service":    service,
-			"namespace":  namespace,
-			"local_ip":   pf.LocalIP,
-			"local_port": pf.LocalPort,
+			logKeyService:   service,
+			logKeyNamespace: namespace,
+			logKeyLocalIP:   pf.LocalIP,
+			logKeyLocalPort: pf.LocalPort,
 		}).Warn("💔 Cached port-forward is dead, removing from cache")
 		pf.Cancel()
 		// Release the IP back to the manager if it was allocated
@@ -261,9 +279,9 @@ func (c *cacheImpl) setupPortForwardWithHint(
 	// Prefer the configured port-forward IP
 	localIP := c.portForwardIP
 	logger.Log.WithFields(logrus.Fields{
-		"service":   service,
-		"namespace": namespace,
-		"local_ip":  localIP,
+		logKeyService:   service,
+		logKeyNamespace: namespace,
+		logKeyLocalIP:   localIP,
 	}).Debug("Setting up port-forward")
 
 	// Handle port allocation
@@ -273,10 +291,10 @@ func (c *cacheImpl) setupPortForwardWithHint(
 	}
 
 	logger.Log.WithFields(logrus.Fields{
-		"service":    service,
-		"namespace":  namespace,
-		"local_ip":   localIP,
-		"local_port": localPort,
+		logKeyService:   service,
+		logKeyNamespace: namespace,
+		logKeyLocalIP:   localIP,
+		logKeyLocalPort: localPort,
 	}).Info("🔍 Allocated free port for port-forward")
 
 	// Get Kubernetes config
@@ -294,8 +312,8 @@ func (c *cacheImpl) setupPortForwardWithHint(
 	c.client = clientset
 
 	logger.Log.WithFields(logrus.Fields{
-		"service":   service,
-		"namespace": namespace,
+		logKeyService:   service,
+		logKeyNamespace: namespace,
 	}).Info("Looking up service: " + namespace + "/" + service)
 
 	// Find pod and target port for the service
@@ -335,10 +353,10 @@ func (c *cacheImpl) setupPortForwardWithHint(
 
 	// Continue anyway even if we can't validate the connection
 	logger.Log.WithFields(logrus.Fields{
-		"service":    service,
-		"namespace":  namespace,
-		"local_ip":   localIP,
-		"local_port": localPort,
+		logKeyService:   service,
+		logKeyNamespace: namespace,
+		logKeyLocalIP:   localIP,
+		logKeyLocalPort: localPort,
 	}).Warn("⚠️ Port-forward validation timeout - proceeding anyway")
 
 	return localIP, localPort, cancel, nil
@@ -352,10 +370,10 @@ func (c *cacheImpl) validatePortForward(ip string, port int) {
 	for retries < maxRetries {
 		if err := c.validateConnection(ip, port); err == nil {
 			logger.LogDebug("Port-forward validation successful", logrus.Fields{
-				"ip":          ip,
-				"port":        port,
-				"retries":     retries,
-				"duration_ms": time.Since(start).Milliseconds(),
+				logKeyIP:         ip,
+				logKeyPort:       port,
+				logKeyRetries:    retries,
+				logKeyDurationMS: time.Since(start).Milliseconds(),
 			})
 			return
 		}
@@ -365,10 +383,10 @@ func (c *cacheImpl) validatePortForward(ip string, port int) {
 
 	logger.Log.WithFields(
 		logrus.Fields{
-			"ip":          ip,
-			"port":        port,
-			"retries":     retries,
-			"duration_ms": time.Since(start).Milliseconds(),
+			logKeyIP:         ip,
+			logKeyPort:       port,
+			logKeyRetries:    retries,
+			logKeyDurationMS: time.Since(start).Milliseconds(),
 		},
 	).Warn("⚠️  Port-forward validation failed after retries, proceeding anyway")
 }
@@ -380,9 +398,9 @@ func (c *cacheImpl) Stop() {
 
 	for key, session := range c.sessions {
 		logger.Log.WithFields(logrus.Fields{
-			"session":    key,
-			"local_ip":   session.LocalIP,
-			"local_port": session.LocalPort,
+			logKeySession:   key,
+			logKeyLocalIP:   session.LocalIP,
+			logKeyLocalPort: session.LocalPort,
 		}).Debug("Stopping port-forward")
 		session.Cancel()
 
@@ -413,7 +431,7 @@ func (c *cacheImpl) allocatePort(ip string, preferredPort int) (int, error) {
 
 		logger.Log.WithFields(logrus.Fields{
 			"preferred_port": preferredPort,
-			"ip":             ip,
+			logKeyIP:         ip,
 		}).Debug("Preferred port unavailable, allocating free port")
 	}
 
@@ -429,12 +447,12 @@ func (c *cacheImpl) runPortForward(
 	localPort, targetPort int,
 ) {
 	logger.Log.WithFields(logrus.Fields{
-		"service":     service,
-		"namespace":   namespace,
-		"local_ip":    localIP,
-		"local_port":  localPort,
-		"remote_port": targetPort,
-		"pod":         podName,
+		logKeyService:    service,
+		logKeyNamespace:  namespace,
+		logKeyLocalIP:    localIP,
+		logKeyLocalPort:  localPort,
+		logKeyRemotePort: targetPort,
+		logKeyPod:        podName,
 	}).Info("🚀 Starting port-forward tunnel")
 
 	err := k8s.StartPortForwardOnIP(ctx, config, namespace, podName, localIP, localPort, targetPort)
@@ -453,11 +471,11 @@ func (c *cacheImpl) waitForPortForward(service, namespace, localIP string, local
 	for time.Since(startTime) < 3*time.Second {
 		if c.validateConnection(localIP, localPort) == nil {
 			logger.Log.WithFields(logrus.Fields{
-				"service":    service,
-				"namespace":  namespace,
-				"local_ip":   localIP,
-				"local_port": localPort,
-				"setup_ms":   time.Since(startTime).Milliseconds(),
+				logKeyService:   service,
+				logKeyNamespace: namespace,
+				logKeyLocalIP:   localIP,
+				logKeyLocalPort: localPort,
+				logKeySetupMS:   time.Since(startTime).Milliseconds(),
 			}).Info("✅ Port-forward tunnel ready")
 			return true
 		}
@@ -506,9 +524,9 @@ func (c *cacheImpl) cleanupSessionLocked(
 	isWarning bool,
 ) {
 	logFields := logrus.Fields{
-		"session":    key,
-		"local_ip":   session.LocalIP,
-		"local_port": session.LocalPort,
+		logKeySession:   key,
+		logKeyLocalIP:   session.LocalIP,
+		logKeyLocalPort: session.LocalPort,
 	}
 
 	if time.Since(session.LastUsed) > idleTimeout {
@@ -545,10 +563,10 @@ func (c *cacheImpl) ForceRefreshPortForward(service, namespace string) error {
 	// Stop the existing session if it exists
 	if session, exists := c.sessions[key]; exists {
 		logger.LogDebug("Force refreshing port-forward", logrus.Fields{
-			"service":    service,
-			"namespace":  namespace,
-			"local_ip":   session.LocalIP,
-			"local_port": session.LocalPort,
+			logKeyService:   service,
+			logKeyNamespace: namespace,
+			logKeyLocalIP:   session.LocalIP,
+			logKeyLocalPort: session.LocalPort,
 		})
 
 		// Cancel the existing session

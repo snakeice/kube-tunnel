@@ -88,9 +88,9 @@ func (rm *LinuxRouteManager) AddRoute(
 	// Check if route already exists
 	if _, exists := rm.routes[key]; exists {
 		logger.Log.WithFields(logrus.Fields{
-			"destination": destination,
-			"gateway":     gateway,
-			"interface":   interfaceName,
+			fieldKeyDestination: destination,
+			fieldKeyGateway:     gateway,
+			fieldKeyInterface:   interfaceName,
 		}).Warn("Route already exists")
 		return nil
 	}
@@ -126,10 +126,10 @@ func (rm *LinuxRouteManager) AddRoute(
 	}
 
 	logger.Log.WithFields(logrus.Fields{
-		"destination": destination,
-		"gateway":     gateway,
-		"interface":   interfaceName,
-		"metric":      metric,
+		fieldKeyDestination: destination,
+		fieldKeyGateway:     gateway,
+		fieldKeyInterface:   interfaceName,
+		"metric":            metric,
 	}).Info("Added route")
 
 	return nil
@@ -144,8 +144,8 @@ func (rm *LinuxRouteManager) RemoveRoute(destination, gateway, interfaceName str
 	route, exists := rm.routes[key]
 	if !exists {
 		logger.Log.WithFields(logrus.Fields{
-			"destination": destination,
-			"gateway":     gateway,
+			fieldKeyDestination: destination,
+			fieldKeyGateway:     gateway,
 		}).Warn("Route not found for removal")
 		return nil
 	}
@@ -165,9 +165,9 @@ func (rm *LinuxRouteManager) RemoveRoute(destination, gateway, interfaceName str
 	cmd := exec.Command("sudo", append([]string{"ip"}, args...)...)
 	if err := cmd.Run(); err != nil {
 		logger.Log.WithFields(logrus.Fields{
-			"destination": destination,
-			"gateway":     gateway,
-			"error":       err,
+			fieldKeyDestination: destination,
+			fieldKeyGateway:     gateway,
+			fieldKeyError:       err,
 		}).Warn("Failed to remove route")
 		return fmt.Errorf("failed to remove route %s -> %s: %w", destination, gateway, err)
 	}
@@ -175,9 +175,9 @@ func (rm *LinuxRouteManager) RemoveRoute(destination, gateway, interfaceName str
 	delete(rm.routes, key)
 
 	logger.Log.WithFields(logrus.Fields{
-		"destination": destination,
-		"gateway":     gateway,
-		"interface":   route.Interface,
+		fieldKeyDestination: destination,
+		fieldKeyGateway:     gateway,
+		fieldKeyInterface:   route.Interface,
 	}).Info("Removed route")
 
 	return nil

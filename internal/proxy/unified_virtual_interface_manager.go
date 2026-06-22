@@ -261,7 +261,7 @@ func (uvim *UnifiedVirtualInterfaceManager) GetStatus() map[string]any {
 
 	status := map[string]any{
 		"enabled":                     uvim.enabled,
-		"platform":                    runtime.GOOS,
+		fieldKeyPlatform:              runtime.GOOS,
 		"virtual_interface_support":   uvim.virtualInterface.IsSupported(),
 		"traffic_redirection_support": uvim.trafficRedirect.IsSupported(),
 		"route_management_support":    uvim.routeManager.IsSupported(),

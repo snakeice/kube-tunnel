@@ -82,8 +82,8 @@ func (vim *LinuxVirtualInterfaceManager) CreateVirtualInterface(name, ipStr stri
 	// Check if interface already exists
 	if vim.IsInterfaceExists(name) {
 		logger.Log.WithFields(logrus.Fields{
-			"interface": name,
-			"ip":        ipStr,
+			fieldKeyInterface: name,
+			fieldKeyIP:        ipStr,
 		}).Warn("Virtual interface already exists, skipping creation")
 		return nil
 	}
@@ -100,7 +100,7 @@ func (vim *LinuxVirtualInterfaceManager) CreateVirtualInterface(name, ipStr stri
 		// Try to clean up the interface we just created
 		if err := vim.cleanupInterface(name); err != nil {
 			logger.Log.WithError(err).
-				WithField("interface", name).
+				WithField(fieldKeyInterface, name).
 				Warn("Failed to cleanup virtual interface after IP assignment failure")
 		}
 		return fmt.Errorf("failed to set IP %s on interface %s: %w", ipStr, name, err)
@@ -112,7 +112,7 @@ func (vim *LinuxVirtualInterfaceManager) CreateVirtualInterface(name, ipStr stri
 		// Try to clean up the interface we just created
 		if err := vim.cleanupInterface(name); err != nil {
 			logger.Log.WithError(err).
-				WithField("interface", name).
+				WithField(fieldKeyInterface, name).
 				Warn("Failed to cleanup virtual interface after bringing up failure")
 		}
 		return fmt.Errorf("failed to bring up interface %s: %w", name, err)
@@ -126,8 +126,8 @@ func (vim *LinuxVirtualInterfaceManager) CreateVirtualInterface(name, ipStr stri
 	}
 
 	logger.Log.WithFields(logrus.Fields{
-		"interface": name,
-		"ip":        ipStr,
+		fieldKeyInterface: name,
+		fieldKeyIP:        ipStr,
 	}).Info("Created virtual interface")
 
 	return nil
@@ -147,8 +147,8 @@ func (vim *LinuxVirtualInterfaceManager) cleanupInterface(name string) error {
 	cmd := exec.Command("sudo", "ip", "link", "delete", name)
 	if err := cmd.Run(); err != nil {
 		logger.Log.WithFields(logrus.Fields{
-			"interface": name,
-			"error":     err,
+			fieldKeyInterface: name,
+			fieldKeyError:     err,
 		}).Warn("Failed to remove virtual interface")
 		return fmt.Errorf("failed to remove virtual interface %s: %w", name, err)
 	}
@@ -156,7 +156,7 @@ func (vim *LinuxVirtualInterfaceManager) cleanupInterface(name string) error {
 	// Remove from our tracking
 	delete(vim.interfaces, name)
 
-	logger.Log.WithField("interface", name).Info("Removed virtual interface")
+	logger.Log.WithField(fieldKeyInterface, name).Info("Removed virtual interface")
 	return nil
 }
 

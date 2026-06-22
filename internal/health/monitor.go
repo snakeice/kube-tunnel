@@ -13,6 +13,14 @@ import (
 	"github.com/snakeice/kube-tunnel/internal/metrics"
 )
 
+const (
+	logKeyService      = "service"
+	logKeyPort         = "port"
+	logKeyResponseMs   = "response_ms"
+	logKeyFailureCount = "failure_count"
+	logKeyError        = "error"
+)
+
 // Status represents the health state of a backend service.
 type Status struct {
 	IsHealthy    bool
@@ -108,8 +116,8 @@ func (hm *Monitor) RegisterService(serviceKey string, port int) {
 		hm.updateServiceCountMetrics()
 
 		logger.LogDebug("Registered service for health monitoring", logrus.Fields{
-			"service": serviceKey,
-			"port":    port,
+			logKeyService: serviceKey,
+			logKeyPort:    port,
 		})
 
 		// Perform initial health check
@@ -133,7 +141,7 @@ func (hm *Monitor) UnregisterService(serviceKey string) {
 		hm.updateServiceCountMetrics()
 
 		logger.LogDebug("Unregistered service from health monitoring", logrus.Fields{
-			"service": serviceKey,
+			logKeyService: serviceKey,
 		})
 	}
 }
@@ -153,7 +161,7 @@ func (hm *Monitor) IsHealthy(serviceKey string) *Status {
 			status.IsHealthy = false
 			status.ErrorMessage = "Service health check is stale"
 			logger.LogDebug("Service marked stale due to inactivity", logrus.Fields{
-				"service":        serviceKey,
+				logKeyService:    serviceKey,
 				"last_checked":   status.LastChecked,
 				"stale_duration": staleDuration,
 			})
@@ -254,10 +262,10 @@ func (hm *Monitor) checkServiceHealth(serviceKey string, port int) {
 	// Log response time collection for debugging
 	if responseTime > 0 {
 		logger.LogDebug("Health check response time recorded", logrus.Fields{
-			"service":     serviceKey,
-			"port":        port,
-			"response_ms": responseTime.Milliseconds(),
-			"status":      status,
+			logKeyService:    serviceKey,
+			logKeyPort:       port,
+			logKeyResponseMs: responseTime.Milliseconds(),
+			"status":         status,
 		})
 	}
 
@@ -301,12 +309,12 @@ func (hm *Monitor) checkServiceHealth(serviceKey string, port int) {
 	// Log periodic health status for debugging
 	if statusObj.FailureCount > 0 || responseTime > 100*time.Millisecond {
 		logger.LogDebug("Health check result", logrus.Fields{
-			"service":       serviceKey,
-			"port":          port,
-			"healthy":       isHealthy,
-			"response_ms":   responseTime.Milliseconds(),
-			"failure_count": statusObj.FailureCount,
-			"error":         statusObj.ErrorMessage,
+			logKeyService:      serviceKey,
+			logKeyPort:         port,
+			"healthy":          isHealthy,
+			logKeyResponseMs:   responseTime.Milliseconds(),
+			logKeyFailureCount: statusObj.FailureCount,
+			logKeyError:        statusObj.ErrorMessage,
 		})
 	}
 }
@@ -320,10 +328,10 @@ func (hm *Monitor) handleHealthyService(
 ) {
 	if !status.IsHealthy {
 		logger.LogDebug("Service recovered", logrus.Fields{
-			"service":     serviceKey,
-			"port":        port,
-			"response_ms": responseTime.Milliseconds(),
-			"was_failing": status.FailureCount,
+			logKeyService:    serviceKey,
+			logKeyPort:       port,
+			logKeyResponseMs: responseTime.Milliseconds(),
+			"was_failing":    status.FailureCount,
 		})
 	}
 	status.IsHealthy = true
@@ -348,10 +356,10 @@ func (hm *Monitor) handleUnhealthyService(
 	if status.FailureCount >= hm.maxFailures {
 		if status.IsHealthy {
 			logger.LogDebug("Service marked unhealthy", logrus.Fields{
-				"service":       serviceKey,
-				"port":          port,
-				"failure_count": status.FailureCount,
-				"error":         status.ErrorMessage,
+				logKeyService:      serviceKey,
+				logKeyPort:         port,
+				logKeyFailureCount: status.FailureCount,
+				logKeyError:        status.ErrorMessage,
 			})
 		}
 		status.IsHealthy = false
@@ -362,10 +370,10 @@ func (hm *Monitor) handleUnhealthyService(
 	maxFailureThreshold := hm.maxFailures * 3 // Allow 3x the normal failure threshold
 	if status.FailureCount >= maxFailureThreshold {
 		logger.LogDebug("Auto-removing consistently failing service", logrus.Fields{
-			"service":       serviceKey,
-			"port":          port,
-			"failure_count": status.FailureCount,
-			"max_threshold": maxFailureThreshold,
+			logKeyService:      serviceKey,
+			logKeyPort:         port,
+			logKeyFailureCount: status.FailureCount,
+			"max_threshold":    maxFailureThreshold,
 		})
 
 		// Schedule removal in the next iteration to avoid deadlock

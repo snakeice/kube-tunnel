@@ -18,6 +18,9 @@ const (
 	// Default IP addresses.
 	defaultDNSIP         = "10.8.0.1"
 	defaultPortForwardIP = "10.8.0.2"
+
+	defaultIPRange1 = "10.8.0.0/24"
+	defaultIPRange2 = "10.9.0.0/24"
 )
 
 type Config struct {
@@ -177,8 +180,8 @@ func createDefaultNetworkConfig() NetworkConfig {
 		PortForwardBindIP: portForwardIP,
 		ProxyBindIP:       "127.0.0.1",
 		CustomIPRanges: []string{
-			"10.8.0.0/24",
-			"10.9.0.0/24",
+			defaultIPRange1,
+			defaultIPRange2,
 		},
 	}
 }
@@ -410,7 +413,7 @@ func validateVirtualInterfaceConfig(network NetworkConfig) NetworkConfig {
 
 // validateIPRanges validates IP range configuration.
 func validateIPRanges(network NetworkConfig) NetworkConfig {
-	defaultRanges := []string{"10.8.0.0/24", "10.9.0.0/24"}
+	defaultRanges := []string{defaultIPRange1, defaultIPRange2}
 
 	if len(network.CustomIPRanges) == 0 {
 		network.CustomIPRanges = defaultRanges

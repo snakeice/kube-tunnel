@@ -96,11 +96,11 @@ func (pf *PfctlManager) AddRedirectionRule(rule PfctlRule) error {
 	}
 
 	logger.Log.WithFields(logrus.Fields{
-		"from":        rule.From,
-		"to":          rule.To,
-		"protocol":    rule.Protocol,
-		"interface":   rule.Interface,
-		"description": rule.Description,
+		fieldKeyFrom:      rule.From,
+		fieldKeyTo:        rule.To,
+		fieldKeyProtocol:  rule.Protocol,
+		fieldKeyInterface: rule.Interface,
+		"description":     rule.Description,
 	}).Info("🔀 Added pfctl redirection rule")
 
 	return nil
@@ -127,8 +127,8 @@ func (pf *PfctlManager) RemoveRedirectionRule(rule PfctlRule) error {
 	}
 
 	logger.Log.WithFields(logrus.Fields{
-		"from": rule.From,
-		"to":   rule.To,
+		fieldKeyFrom: rule.From,
+		fieldKeyTo:   rule.To,
 	}).Info("🗑️  Removed pfctl redirection rule")
 
 	return nil
@@ -144,7 +144,7 @@ func (pf *PfctlManager) AddPortRedirection(
 	rule := PfctlRule{
 		From:        fmt.Sprintf("%s:%d", fromIP, fromPort),
 		To:          fmt.Sprintf("%s:%d", toIP, toPort),
-		Protocol:    "tcp",
+		Protocol:    string(ProtocolTCP),
 		Action:      "rdr",
 		Interface:   "lo0",
 		Description: fmt.Sprintf("Redirect %s:%d to %s:%d", fromIP, fromPort, toIP, toPort),
@@ -196,12 +196,12 @@ func (pf *PfctlManager) GetStatistics() map[string]any {
 	defer pf.mu.RUnlock()
 
 	stats := map[string]any{
-		"supported":     pf.IsSupported(),
-		"enabled":       pf.enabled,
-		"rules_count":   len(pf.rules),
-		"anchors_count": len(pf.anchors),
-		"platform":      runtime.GOOS,
-		"rule_path":     pf.rulePath,
+		fieldKeySupported: pf.IsSupported(),
+		"enabled":         pf.enabled,
+		"rules_count":     len(pf.rules),
+		"anchors_count":   len(pf.anchors),
+		fieldKeyPlatform:  runtime.GOOS,
+		"rule_path":       pf.rulePath,
 	}
 
 	if pf.IsSupported() {
