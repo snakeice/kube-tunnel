@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -20,6 +20,14 @@ const (
 	protocolHTTP11 = "http/1.1"
 )
 
+func isInternalIP(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	return parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsLinkLocalUnicast()
+}
+
 func createTransport(
 	cfg config.PerformanceConfig,
 	isHTTPS bool,
@@ -28,12 +36,10 @@ func createTransport(
 	targetPort int,
 ) http.RoundTripper {
 	dialer := func(network, addr string) (net.Conn, error) {
-		var targetAddr string
-		if strings.Contains(targetIP, ":") {
-			targetAddr = fmt.Sprintf("[%s]:%d", targetIP, targetPort)
-		} else {
-			targetAddr = fmt.Sprintf("%s:%d", targetIP, targetPort)
+		if !isInternalIP(targetIP) {
+			return nil, fmt.Errorf("attempted connection to non-internal address: %s", targetIP)
 		}
+		targetAddr := net.JoinHostPort(targetIP, strconv.Itoa(targetPort))
 		logger.LogDebug("Connecting to target", logrus.Fields{
 			"original_addr":    addr,
 			fieldKeyTargetAddr: targetAddr,
@@ -158,13 +164,11 @@ func createHTTPSTransport(
 
 func createSimpleTransport(targetIP string, targetPort int) http.RoundTripper {
 	dialer := func(network, addr string) (net.Conn, error) {
-		var targetAddr string
-		if strings.Contains(targetIP, ":") {
-			targetAddr = fmt.Sprintf("[%s]:%d", targetIP, targetPort)
-		} else {
-			targetAddr = fmt.Sprintf("%s:%d", targetIP, targetPort)
+		if !isInternalIP(targetIP) {
+			return nil, fmt.Errorf("attempted connection to non-internal address: %s", targetIP)
 		}
-
+		targetAddr := net.JoinHostPort(targetIP, strconv.Itoa(targetPort))
+		//nolint:gosec // G704 — target IP/Port are controlled by kube-tunnel (internal IPs), not user input
 		return net.DialTimeout(network, targetAddr, 1*time.Second)
 	}
 

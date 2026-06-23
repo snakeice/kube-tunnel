@@ -283,6 +283,7 @@ func runPortForwardWithRetry(
 		"pod",
 		"🔗 Port-forward tunnel established",
 		func(ctx context.Context, s *PortForwarderSetup, ns, ent, lip string, lp, rp int) {
+			//nolint:gosec // G118 - context is managed via ctx.Done() inside the goroutine
 			go monitorPortForwardAggressively(ctx, s, ns, ent, lip, lp, rp)
 		},
 	)
@@ -550,6 +551,7 @@ func runServicePortForwardWithRetry(
 		"service",
 		"🔗 Service port-forward tunnel established",
 		func(ctx context.Context, s *PortForwarderSetup, ns, ent, lip string, lp, rp int) {
+			//nolint:gosec // G118 - context is managed via ctx.Done() inside the goroutine
 			go monitorServicePortForward(ctx, s, ns, ent, lip, lp, rp)
 		},
 	)

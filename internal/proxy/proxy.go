@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -403,12 +405,11 @@ func (crp *CustomReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Pre-computed target URL format (cached in struct for better performance)
-	targetURL := *r.URL
-	targetURL.Scheme = "http"
-	if strings.Contains(crp.targetIP, ":") {
-		targetURL.Host = fmt.Sprintf("[%s]:%d", crp.targetIP, crp.targetPort)
-	} else {
-		targetURL.Host = fmt.Sprintf("%s:%d", crp.targetIP, crp.targetPort)
+	targetURL := url.URL{
+		Scheme:   "http",
+		Host:     net.JoinHostPort(crp.targetIP, strconv.Itoa(crp.targetPort)),
+		Path:     r.URL.Path,
+		RawQuery: r.URL.RawQuery,
 	}
 
 	// Minimal request creation
@@ -579,13 +580,11 @@ func createReverseProxy(
 	if isGRPC {
 		// For gRPC, create h2c (HTTP/2 cleartext) transport
 		transport = createH2CTransport(func(network, addr string) (net.Conn, error) {
-			var targetAddr string
-			if strings.Contains(localIP, ":") {
-				targetAddr = fmt.Sprintf("[%s]:%d", localIP, localPort)
-			} else {
-				targetAddr = fmt.Sprintf("%s:%d", localIP, localPort)
+			if !isInternalIP(localIP) {
+				return nil, fmt.Errorf("attempted connection to non-internal address: %s", localIP)
 			}
-
+			targetAddr := net.JoinHostPort(localIP, strconv.Itoa(localPort))
+			//nolint:gosec // G704 — target IP/Port are controlled by kube-tunnel (internal IPs), not user input
 			return net.DialTimeout(network, targetAddr, 1*time.Second)
 		})
 	} else {
