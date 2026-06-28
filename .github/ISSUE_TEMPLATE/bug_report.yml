@@ -32,7 +32,6 @@ body:
         - Linux (arm64)
         - macOS (Intel)
         - macOS (Apple Silicon)
-        - Windows (amd64)
         - Docker/Container
         - Kubernetes
         - Other (specify in description)

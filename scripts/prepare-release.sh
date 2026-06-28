@@ -252,7 +252,7 @@ build_binaries() {
     cd "$REPO_ROOT"
 
     # Build for multiple platforms
-    local platforms=("linux/amd64" "linux/arm64" "darwin/amd64" "darwin/arm64" "windows/amd64")
+    local platforms=("linux/amd64" "linux/arm64" "darwin/amd64" "darwin/arm64")
 
     for platform in "${platforms[@]}"; do
         local goos="${platform%/*}"
@@ -416,24 +416,12 @@ curl -L https://github.com/snakeice/kube-tunnel/releases/download/${NEW_VERSION}
 # macOS (x86_64)
 curl -L https://github.com/snakeice/kube-tunnel/releases/download/${NEW_VERSION}/kube-tunnel_Darwin_x86_64.tar.gz | tar xz
 
-# Windows (x86_64)
-curl -L https://github.com/snakeice/kube-tunnel/releases/download/${NEW_VERSION}/kube-tunnel_Windows_x86_64.zip -o kube-tunnel.zip
 \`\`\`
 
 ### Docker
 \`\`\`bash
 docker pull ghcr.io/snakeice/kube-tunnel:${NEW_VERSION}
 docker pull ghcr.io/snakeice/kube-tunnel:latest
-\`\`\`
-
-### Package Managers
-\`\`\`bash
-# Homebrew
-brew install snakeice/tap/kube-tunnel
-
-# Scoop (Windows)
-scoop bucket add snakeice https://github.com/snakeice/scoop-bucket
-scoop install kube-tunnel
 \`\`\`
 
 ## 🔄 Upgrade Guide

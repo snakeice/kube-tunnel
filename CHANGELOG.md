@@ -68,7 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automatic port-forwarding with intelligent caching
 - DNS-style routing using Kubernetes service names
 - Built-in mDNS server for automatic DNS resolution
-- Cross-platform support (macOS, Linux, Windows)
+- Cross-platform support (macOS, Linux)
 - Service discovery and pod selection
 - Automatic cleanup of idle port-forwards
 - Comprehensive logging with structured fields

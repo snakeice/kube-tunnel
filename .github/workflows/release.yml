@@ -115,7 +115,7 @@ jobs:
     needs: release
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - name: Download and verify release
         shell: bash
@@ -133,26 +133,16 @@ jobs:
               ARCH="x86_64"
               EXT=".tar.gz"
               ;;
-            windows-latest)
-              OS="Windows"
-              ARCH="x86_64"
-              EXT=".zip"
-              ;;
           esac
 
           DOWNLOAD_URL="https://github.com/snakeice/kube-tunnel/releases/download/${TAG}/kube-tunnel_${OS}_${ARCH}${EXT}"
           echo "Downloading: $DOWNLOAD_URL"
 
           # Download and verify the binary exists and is executable
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            curl -L "$DOWNLOAD_URL" -o release.zip
-            unzip release.zip
-            ./kube-tunnel.exe -help
-          else
-            curl -L "$DOWNLOAD_URL" | tar xz
-            chmod +x kube-tunnel
-            ./kube-tunnel -help
-          fi
+          curl -L "$DOWNLOAD_URL" | tar xz
+          chmod +x kube-tunnel
+          ./kube-tunnel -help
+
 
           echo "✅ Release verification successful for ${{ matrix.os }}"
 

@@ -80,11 +80,8 @@ jobs:
     needs: [test, lint]
     strategy:
       matrix:
-        goos: [linux, darwin, windows]
+        goos: [linux, darwin]
         goarch: [amd64, arm64]
-        exclude:
-          - goos: windows
-            goarch: arm64
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -102,7 +99,7 @@ jobs:
         run: |
           CGO_ENABLED=0 go build \
             -ldflags='-w -s -extldflags "-static"' \
-            -o kube-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }} \
+            -o kube-tunnel-${{ matrix.goos }}-${{ matrix.goarch }} \
             ./cmd
 
       - name: Upload build artifacts
