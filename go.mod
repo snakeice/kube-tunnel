@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/miekg/dns v1.1.72
 	github.com/prometheus/client_golang v1.23.2
-	github.com/sirupsen/logrus v1.9.4
+	github.com/sirupsen/logrus v1.10.1
 	github.com/spf13/viper v1.21.0
 	golang.org/x/net v0.56.0
 	k8s.io/api v0.36.2
