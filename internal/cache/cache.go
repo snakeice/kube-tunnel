@@ -43,6 +43,7 @@ type Cache interface {
 	EnsurePortForwardWithHint(service, namespace string, preferredPort int) (string, int, error)
 	GetPortForwardIP() string
 	ForceRefreshPortForward(service, namespace string) error
+	InvalidateSession(serviceKey string)
 	Stop()
 }
 
@@ -192,7 +193,7 @@ func (c *cacheImpl) EnsurePortForwardWithHint(
 		LastUsed:  time.Now(),
 	}
 	if c.monitor != nil {
-		c.monitor.RegisterService(key, localPort)
+		c.monitor.RegisterService(key, localIP, localPort)
 	}
 	c.validatePortForward(localIP, localPort)
 	go c.autoExpire(key)
@@ -580,4 +581,12 @@ func (c *cacheImpl) ForceRefreshPortForward(service, namespace string) error {
 
 	// The next call to EnsurePortForward will create a fresh session
 	return nil
+}
+
+// InvalidateSession tears down a dead port-forward session by service key
+// (e.g. "svc.ns" or "svc.ns:port"). Called by the health monitor when it
+// detects the backend is no longer accepting connections. The next request
+// will trigger a fresh port-forward via EnsurePortForward.
+func (c *cacheImpl) InvalidateSession(serviceKey string) {
+	c.cleanupSession(serviceKey, "💀 Health check detected dead port-forward, invalidating", true)
 }

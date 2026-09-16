@@ -8,6 +8,6 @@ description = "Run linters"
 run = "golangci-lint run"
 
 [tools]
-go = "1.26"
-golangci-lint = "2.12"
+go = "1.27"
+golangci-lint = "2.13.2"
 pre-commit = "4.6.0"

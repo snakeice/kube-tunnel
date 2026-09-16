@@ -95,6 +95,7 @@ func createHTTPTransport(
 	cfg config.PerformanceConfig,
 ) http.RoundTripper {
 	transport := &http.Transport{
+		//nolint:staticcheck // SA1019: Dial deprecated; DialContext would break h2c DialTLS plumbing
 		Dial:                  dialer,
 		DisableKeepAlives:     false,
 		DisableCompression:    false,
@@ -110,6 +111,7 @@ func createHTTPTransport(
 		ForceAttemptHTTP2:     true,
 	}
 
+	//nolint:staticcheck // SA1019: ConfigureTransport deprecated; h2c transport stays on x/net/http2
 	if err := http2.ConfigureTransport(transport); err != nil {
 		logger.LogError("Failed to configure HTTP/2 transport", err)
 	}
@@ -122,6 +124,7 @@ func createH2CTransport(
 
 ) http.RoundTripper {
 	// Create HTTP/2 transport for h2c (cleartext HTTP/2)
+	//nolint:staticcheck // SA1019: http2.Transport needed for h2c; stdlib http.Transport.Protocols lacks this wiring yet
 	http2Transport := &http2.Transport{
 		AllowHTTP: true, // Allow h2c
 		DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
@@ -139,6 +142,7 @@ func createHTTPSTransport(
 ) http.RoundTripper {
 	tlsConfig := loadTLSConfig()
 	transport := &http.Transport{
+		//nolint:staticcheck // SA1019: Dial deprecated; DialContext would break h2c DialTLS plumbing
 		Dial:                  dialer,
 		TLSClientConfig:       tlsConfig,
 		DisableKeepAlives:     false,
@@ -155,6 +159,7 @@ func createHTTPSTransport(
 		ForceAttemptHTTP2:     true,
 	}
 
+	//nolint:staticcheck // SA1019: ConfigureTransport deprecated; h2c transport stays on x/net/http2
 	if err := http2.ConfigureTransport(transport); err != nil {
 		logger.LogError("Failed to configure HTTP/2 transport", err)
 	}
@@ -173,6 +178,7 @@ func createSimpleTransport(targetIP string, targetPort int) http.RoundTripper {
 	}
 
 	return &http.Transport{
+		//nolint:staticcheck // SA1019: Dial deprecated; DialContext would break h2c DialTLS plumbing
 		Dial:                dialer,
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -198,6 +204,5 @@ func loadTLSConfig() *tls.Config {
 			tls.CurveP256,
 			tls.X25519,
 		},
-		PreferServerCipherSuites: true,
 	}
 }

@@ -118,6 +118,7 @@ func (pm *PortManager) StartListeningOnPort(port int) error {
 
 	// Create a reverse proxy that forwards to the main proxy
 	reverseProxy := &httputil.ReverseProxy{
+		//nolint:staticcheck // SA1019: Director deprecated; Rewrite can't set URL.Scheme/Host
 		Director: func(req *http.Request) {
 			// Keep the original host and path
 			originalHost := req.Host

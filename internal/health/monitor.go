@@ -30,6 +30,7 @@ type Status struct {
 	ResponseTime time.Duration
 	ErrorMessage string
 	Port         int
+	IP           string
 	// Track whether response time comes from real requests or health checks
 	ResponseTimeSource string // "real_request" or "health_check"
 }
@@ -45,6 +46,10 @@ type Monitor struct {
 	enabled       bool
 	stopChan      chan struct{}
 	wg            sync.WaitGroup
+	// OnUnhealthy is called when a service transitions from healthy to
+	// unhealthy. The cache uses this to tear down dead port-forwards so
+	// the next request recreates them. Optional — nil is a no-op.
+	OnUnhealthy func(serviceKey string)
 }
 
 // Global state removed: instances are now created and owned by the application container.
@@ -92,7 +97,7 @@ func (hm *Monitor) Stop() {
 	hm.wg.Wait()
 }
 
-func (hm *Monitor) RegisterService(serviceKey string, port int) {
+func (hm *Monitor) RegisterService(serviceKey string, ip string, port int) {
 	if !hm.enabled {
 		return
 	}
@@ -108,6 +113,7 @@ func (hm *Monitor) RegisterService(serviceKey string, port int) {
 			FailureCount:       0,
 			ResponseTime:       0,
 			Port:               port,
+			IP:                 ip,
 			ResponseTimeSource: "health_check", // Initial health check
 		}
 
@@ -118,10 +124,11 @@ func (hm *Monitor) RegisterService(serviceKey string, port int) {
 		logger.LogDebug("Registered service for health monitoring", logrus.Fields{
 			logKeyService: serviceKey,
 			logKeyPort:    port,
+			"ip":          ip,
 		})
 
 		// Perform initial health check
-		go hm.checkServiceHealth(serviceKey, port)
+		go hm.checkServiceHealth(serviceKey, ip, port)
 	}
 }
 
@@ -217,12 +224,16 @@ func (hm *Monitor) monitorLoop() {
 // performHealthChecks checks health of all registered services.
 func (hm *Monitor) performHealthChecks() {
 	hm.cacheLock.RLock()
-	servicesToCheck := make(map[string]int)
+	type svc struct {
+		ip   string
+		port int
+	}
+	servicesToCheck := make(map[string]svc)
 
 	// Get services from our own health cache that are actively monitored
 	for key, health := range hm.healthCache {
 		if health != nil {
-			servicesToCheck[key] = health.Port
+			servicesToCheck[key] = svc{ip: health.IP, port: health.Port}
 		}
 	}
 	hm.cacheLock.RUnlock()
@@ -233,23 +244,23 @@ func (hm *Monitor) performHealthChecks() {
 
 	// Check each service in parallel
 	var wg sync.WaitGroup
-	for serviceKey, port := range servicesToCheck {
+	for serviceKey, s := range servicesToCheck {
 		wg.Add(1)
-		go func(key string, p int) {
+		go func(key, ip string, p int) {
 			defer wg.Done()
-			hm.checkServiceHealth(key, p)
-		}(serviceKey, port)
+			hm.checkServiceHealth(key, ip, p)
+		}(serviceKey, s.ip, s.port)
 	}
 
 	wg.Wait()
 }
 
 // checkServiceHealth performs a health check on a specific service.
-func (hm *Monitor) checkServiceHealth(serviceKey string, port int) {
+func (hm *Monitor) checkServiceHealth(serviceKey string, ip string, port int) {
 	startTime := time.Now()
 
 	// Perform multiple health check types
-	isHealthy, err := hm.performHealthCheck(port)
+	isHealthy, err := hm.performHealthCheck(ip, port)
 	responseTime := time.Since(startTime)
 
 	// Record metrics for this health check
@@ -354,15 +365,23 @@ func (hm *Monitor) handleUnhealthyService(
 
 	// Mark as unhealthy after max failures
 	if status.FailureCount >= hm.maxFailures {
-		if status.IsHealthy {
+		wasHealthy := status.IsHealthy
+		status.IsHealthy = false
+		if wasHealthy {
 			logger.LogDebug("Service marked unhealthy", logrus.Fields{
 				logKeyService:      serviceKey,
 				logKeyPort:         port,
 				logKeyFailureCount: status.FailureCount,
 				logKeyError:        status.ErrorMessage,
 			})
+			// Notify the cache to tear down the dead port-forward so the
+			// next request recreates it. Called once, at the transition.
+			// Run in a goroutine to avoid self-deadlock: the callback chain
+			// (InvalidateSession → UnregisterService) re-acquires cacheLock.
+			if hm.OnUnhealthy != nil {
+				go hm.OnUnhealthy(serviceKey)
+			}
 		}
-		status.IsHealthy = false
 	}
 
 	// Auto-cleanup services that have been consistently failing for too long
@@ -385,9 +404,9 @@ func (hm *Monitor) handleUnhealthyService(
 }
 
 // performHealthCheck executes the actual health check.
-func (hm *Monitor) performHealthCheck(port int) (bool, error) {
+func (hm *Monitor) performHealthCheck(ip string, port int) (bool, error) {
 	// Try TCP connection first (most reliable indicator of service availability)
-	if err := hm.checkTCPConnection(port); err != nil {
+	if err := hm.checkTCPConnection(ip, port); err != nil {
 		return false, fmt.Errorf("TCP check failed: %w", err)
 	}
 
@@ -398,11 +417,16 @@ func (hm *Monitor) performHealthCheck(port int) (bool, error) {
 }
 
 // checkTCPConnection performs a simple TCP connection test.
-func (hm *Monitor) checkTCPConnection(port int) error {
+func (hm *Monitor) checkTCPConnection(ip string, port int) error {
 	// Use a shorter timeout for health checks to avoid blocking
 	timeout := min(hm.timeout, 2*time.Second)
 
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), timeout)
+	// Fall back to localhost if no IP was recorded (backward compat)
+	if ip == "" {
+		ip = "127.0.0.1"
+	}
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), timeout)
 	if err != nil {
 		return fmt.Errorf("connection refused or timeout: %w", err)
 	}

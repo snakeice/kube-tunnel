@@ -125,6 +125,7 @@ func main() {
 
 // createServer creates and configures the HTTP server.
 func createServer(port int, conf *config.Config, mux http.Handler) *http.Server {
+	//nolint:staticcheck // SA1019: http2.Server for h2c tuning; stdlib HTTP2 config lacks these knobs
 	h2s := &http2.Server{
 		MaxConcurrentStreams:         conf.Performance.MaxConcurrentStreams,
 		MaxReadFrameSize:             conf.Performance.MaxFrameSize,
@@ -148,6 +149,7 @@ func createServer(port int, conf *config.Config, mux http.Handler) *http.Server 
 		Protocols:    protocols,
 	}
 
+	//nolint:staticcheck // SA1019: ConfigureServer required to wire the tuned h2s into the h2c server
 	if err := http2.ConfigureServer(server, h2s); err != nil {
 		logger.LogError("Failed to configure HTTP/2 server", err)
 		os.Exit(1)

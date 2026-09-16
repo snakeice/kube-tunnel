@@ -65,6 +65,13 @@ func Build() (*Container, error) {
 	// Step 3: Update cache with port-forward IP if virtual interfaces were created
 	c.setupVirtualInterfacesIfEnabled(cfg)
 
+	// Wire the health monitor to invalidate dead port-forward sessions.
+	// When the health check detects "connection refused" (port-forward died),
+	// the cache tears down the session so the next request recreates it.
+	c.Monitor.OnUnhealthy = func(serviceKey string) {
+		c.Cache.InvalidateSession(serviceKey)
+	}
+
 	c.Proxy = proxy.New(c.Cache, c.Monitor, cfg)
 
 	// Step 4: Initialize TCP and UDP proxies if enabled

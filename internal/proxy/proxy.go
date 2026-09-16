@@ -39,6 +39,14 @@ type retryableTransport struct {
 }
 
 func (rt *retryableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// gRPC handles retries at the protocol level, and streams are long-lived
+	// (Temporal long-polls, bidirectional RPCs) — retrying here would break
+	// stream state and can duplicate operations. Single attempt only.
+	if rt.isGRPC {
+		logger.LogRetryAttempt(0, rt.maxRetries, req.Method, req.URL.Path, rt.isGRPC)
+		return rt.base.RoundTrip(req)
+	}
+
 	var lastErr error
 
 	logger.LogRetryAttempt(0, rt.maxRetries, req.Method, req.URL.Path, rt.isGRPC)
@@ -103,7 +111,7 @@ func (rt *retryableTransport) logAttempt(req *http.Request, attempt int) {
 		fieldKeyPath:                req.URL.Path,
 		fieldKeyAttempt:             attempt,
 		fieldKeyRemoteAddr:          req.RemoteAddr,
-		fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+		fieldKeyRequestID:           req.Header.Get("X-Request-ID"),
 		fieldKeyConnectionLifecycle: "open",
 	})
 }
@@ -135,7 +143,7 @@ func (rt *retryableTransport) logSuccess(req *http.Request, attempt int) {
 		fieldKeyPath:                req.URL.Path,
 		fieldKeyAttempt:             attempt,
 		fieldKeyRemoteAddr:          req.RemoteAddr,
-		fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+		fieldKeyRequestID:           req.Header.Get("X-Request-ID"),
 		fieldKeyConnectionLifecycle: "success",
 	})
 }
@@ -152,7 +160,7 @@ func (rt *retryableTransport) handleError(
 			fieldKeyAttempt:             attempt,
 			protocolGRPC:                rt.isGRPC,
 			fieldKeyRemoteAddr:          req.RemoteAddr,
-			fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+			fieldKeyRequestID:           req.Header.Get("X-Request-ID"),
 			fieldKeyConnectionLifecycle: "cancel",
 		})
 		return true
@@ -165,7 +173,7 @@ func (rt *retryableTransport) handleError(
 			fieldKeyAttempt:             attempt,
 			protocolGRPC:                rt.isGRPC,
 			fieldKeyRemoteAddr:          req.RemoteAddr,
-			fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+			fieldKeyRequestID:           req.Header.Get("X-Request-ID"),
 			fieldKeyConnectionLifecycle: "deadline_exceeded",
 		})
 		return true
@@ -178,7 +186,7 @@ func (rt *retryableTransport) handleError(
 			fieldKeyPath:                req.URL.Path,
 			fieldKeyAttempt:             attempt,
 			fieldKeyRemoteAddr:          req.RemoteAddr,
-			fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+			fieldKeyRequestID:           req.Header.Get("X-Request-ID"),
 			fieldKeyConnectionLifecycle: "non-retryable",
 			fieldKeyError:               err.Error(),
 		})
@@ -194,7 +202,7 @@ func (rt *retryableTransport) logRetryError(req *http.Request, attempt int, err 
 		fieldKeyPath:                req.URL.Path,
 		fieldKeyAttempt:             attempt,
 		fieldKeyRemoteAddr:          req.RemoteAddr,
-		fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+		fieldKeyRequestID:           req.Header.Get("X-Request-ID"),
 		fieldKeyConnectionLifecycle: "retry",
 		fieldKeyError:               err.Error(),
 	})
@@ -219,7 +227,7 @@ func (rt *retryableTransport) waitBeforeRetry(
 			fieldKeyAttempt:             attempt + 1,
 			protocolGRPC:                rt.isGRPC,
 			fieldKeyRemoteAddr:          req.RemoteAddr,
-			fieldKeyRequestID:           req.Header.Get("X-Request-Id"),
+			fieldKeyRequestID:           req.Header.Get("X-Request-ID"),
 			fieldKeyConnectionLifecycle: "retry_deadline_exceeded",
 		})
 		return retryCtx.Err()
@@ -443,13 +451,115 @@ func (crp *CustomReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Copy only essential response headers
 	crp.copyEssentialResponseHeaders(w, resp)
 
+	// Announce trailers before WriteHeader so HTTP/2 can send them at stream
+	// end (gRPC delivers Grpc-Status/Grpc-Message as HTTP/2 trailers).
+	crp.announceResponseTrailers(w, resp)
+
 	// Set status and stream
 	w.WriteHeader(resp.StatusCode)
 	crp.streamResponseUltraFast(w, resp, r)
+
+	// Forward HTTP/2 trailers received from the backend after the body ends.
+	crp.copyResponseTrailers(w, resp)
+}
+
+// copyHeader copies all values from src to dst.
+func copyHeader(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+}
+
+// removeHopByHopHeaders strips hop-by-hop headers and any Connection-named
+// headers from h, mirroring net/http/httputil.ReverseProxy behavior.
+func removeHopByHopHeaders(h http.Header) {
+	// hopByHopHeaders are per-connection headers a proxy must not forward
+	// (RFC 7230 §6.1). Matches the stdlib httputil.ReverseProxy list.
+	hopByHopHeaders := []string{
+		"Connection",
+		"Keep-Alive",
+		"Proxy-Authenticate",
+		"Proxy-Authorization",
+		"Te",
+		"Trailer",
+		"Transfer-Encoding",
+		"Upgrade",
+	}
+
+	// RFC 7230 §6.1: strip headers named in Connection first, while the
+	// Connection header still exists, then strip the fixed hop-by-hop set.
+	for _, f := range h["Connection"] {
+		for _, name := range strings.Split(f, ",") {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				h.Del(name)
+			}
+		}
+	}
+	for _, name := range hopByHopHeaders {
+		h.Del(name)
+	}
+}
+
+// announceResponseTrailers declares which trailers will follow the response
+// body. gRPC sends Grpc-Status/Grpc-Message in HTTP/2 trailers — they must be
+// announced before WriteHeader for the client to receive them.
+func (crp *CustomReverseProxy) announceResponseTrailers(
+	w http.ResponseWriter,
+	resp *http.Response,
+) {
+	if len(resp.Trailer) == 0 {
+		return
+	}
+	trailerKeys := make([]string, 0, len(resp.Trailer))
+	for k := range resp.Trailer {
+		trailerKeys = append(trailerKeys, k)
+	}
+	w.Header().Add("Trailer", strings.Join(trailerKeys, ", "))
+}
+
+// copyResponseTrailers forwards trailers received from the backend to the
+// client. Mirrors net/http/httputil.ReverseProxy: trailer values are written
+// back with the "Trailer:" prefix so net/http sends them as HTTP/2 trailers
+// even when they were not announced before WriteHeader.
+func (crp *CustomReverseProxy) copyResponseTrailers(
+	w http.ResponseWriter,
+	resp *http.Response,
+) {
+	// Close the body so res.Trailer is populated (trailers arrive in the final
+	// HTTP/2 HEADERS frame, after the body stream ends).
+	//nolint:errcheck,gosec // double-close after EOF is a no-op; error not actionable
+	resp.Body.Close()
+
+	if len(resp.Trailer) == 0 {
+		return
+	}
+
+	// Flush so trailers are emitted even for short bodies that would otherwise
+	// be sent with a Content-Length.
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	for k, vv := range resp.Trailer {
+		k = http.TrailerPrefix + k
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
 }
 
 // copyEssentialHeaders copies only the most essential headers for maximum speed.
 func (crp *CustomReverseProxy) copyEssentialHeaders(dst, src *http.Request) {
+	// gRPC metadata travels as arbitrary HTTP headers (Te: trailers,
+	// Grpc-Timeout, Grpc-Encoding, Grpc-Trace-Bin, custom schemes) — copy all.
+	if crp.isGRPC {
+		dst.Header = src.Header.Clone()
+		return
+	}
+
 	// Only copy the most critical headers for functionality
 	essentialHeaders := []string{
 		"Content-Type",
@@ -472,6 +582,15 @@ func (crp *CustomReverseProxy) copyEssentialResponseHeaders(
 	w http.ResponseWriter,
 	resp *http.Response,
 ) {
+	// gRPC servers may return custom metadata in headers — copy everything
+	// except hop-by-hop headers, which are illegal to forward to an HTTP/2
+	// client (RFC 7540 §8.1.2.2) and would duplicate the Trailer announcement.
+	if crp.isGRPC {
+		removeHopByHopHeaders(resp.Header)
+		copyHeader(w.Header(), resp.Header)
+		return
+	}
+
 	// Only copy essential response headers
 	essentialHeaders := []string{
 		"Content-Type",
@@ -486,16 +605,6 @@ func (crp *CustomReverseProxy) copyEssentialResponseHeaders(
 			w.Header().Set(header, value)
 		}
 	}
-
-	// Copy gRPC headers if needed
-	if crp.isGRPC {
-		if grpcStatus := resp.Header.Get("Grpc-Status"); grpcStatus != "" {
-			w.Header().Set("Grpc-Status", grpcStatus)
-		}
-		if grpcMessage := resp.Header.Get("Grpc-Message"); grpcMessage != "" {
-			w.Header().Set("Grpc-Message", grpcMessage)
-		}
-	}
 }
 
 // streamResponseUltraFast provides the fastest possible response streaming.
@@ -508,6 +617,15 @@ func (crp *CustomReverseProxy) streamResponseUltraFast(
 	buffer := make([]byte, 128*1024) // 128KB buffer
 
 	flusher, canFlush := w.(http.Flusher)
+
+	// If the client disconnects, close the backend body to unblock the Read
+	// below — otherwise a long-lived gRPC stream (Temporal long-poll,
+	// bidirectional RPC) hangs this goroutine forever.
+	go func() {
+		<-r.Context().Done()
+		//nolint:errcheck,gosec // close is idempotent; unblocking the Read is the goal
+		resp.Body.Close()
+	}()
 
 	for {
 		// Check for client disconnect
